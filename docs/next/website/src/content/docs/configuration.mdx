@@ -369,6 +369,7 @@ row_gap = 0
 rows = [
   ["state_icon", "machine", "workspace", "tab"],
   ["agent"],
+  ["$session_title"],
 ]
 
 [ui.sidebar.spaces]
@@ -391,6 +392,8 @@ Agent rows accept these built-in tokens:
 - `terminal_title` — latest OSC 0/2 terminal title after safety normalization.
 - `terminal_title_stripped` — the terminal title with one recognized leading activity or spinner glyph and its following whitespace removed.
 - `$name` — custom pane metadata named `name`.
+
+With the OpenCode TUI integration installed, `$session_title` shows the selected root session's title in the Agents section. For Claude Code, it shows the terminal title with Claude's leading activity glyph removed when Claude supplies one. The line is omitted when no session title is available; other agents remain two lines tall. Custom sidebar rows can include `$session_title` wherever desired.
 
 Space rows accept these built-in tokens:
 

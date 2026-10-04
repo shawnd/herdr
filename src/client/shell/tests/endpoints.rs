@@ -2100,6 +2100,14 @@ fn disconnected_active_endpoint_freezes_surface_and_marks_cached_ui_stale() {
     let buffer = frame.to_ratatui_buffer().expect("frame should reconstruct");
     let stale_icon = buffer
         .content()
+        .chunks(frame.width as usize)
+        .find(|row| {
+            row.iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+                .contains("Build · remote agent")
+        })
+        .expect("stale agent sidebar row")
         .iter()
         .find(|cell| cell.symbol() == "×")
         .expect("stale blocked icon");

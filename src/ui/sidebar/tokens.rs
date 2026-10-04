@@ -231,6 +231,27 @@ mod tests {
     }
 
     #[test]
+    fn default_agent_rows_show_reported_session_title_only_when_available() {
+        let config = AgentsSidebarConfig::default();
+        let mut entry = entry();
+        entry.canonical_agent = Some(crate::detect::Agent::OpenCode);
+        entry.agent_label = Some("opencode".into());
+        assert_eq!(agent_rows(&config, context(&entry), "idle").len(), 2);
+
+        entry
+            .tokens
+            .insert("session_title".into(), "Fix sidebar layout".into());
+        let rows = agent_rows(&config, context(&entry), "idle");
+        assert_eq!(rows.len(), 3);
+        assert_eq!(
+            rows[2],
+            vec![ResolvedToken::unstyled(ResolvedTokenKind::Custom(
+                "Fix sidebar layout".into()
+            ))]
+        );
+    }
+
+    #[test]
     fn conditional_styles_merge_first_match_and_keep_missing_values_absent() {
         let config: AgentsSidebarConfig = toml::from_str(r##"
 rows = [["state_icon", { token = "machine", fg = "#fff", bold = true, dim = true, rules = [{ equals = "Local", fg = "#f00", bold = false }, { contains = "Loc", fg = "#0f0", dim = false }] }], [{ token = "$missing", rules = [{ equals = "", bold = true }] }]]

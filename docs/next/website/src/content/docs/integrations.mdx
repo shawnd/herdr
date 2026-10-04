@@ -109,7 +109,7 @@ Install the Claude Code hook:
 herdr integration install claude
 ```
 
-The hook reports Claude Code session identity to the local Herdr socket on session start. Claude Code state comes from Herdr's screen manifest detection.
+The hook reports Claude Code session identity to the local Herdr socket on session start. Claude Code state comes from Herdr's screen manifest detection. When Claude supplies an activity-prefixed terminal title, the Agents sidebar shows its stripped conversation name without requiring a hook update.
 
 Claude integration v10 matches only the documented `SessionStart` sources: `startup`, `resume`, `clear`, `compact`, and `fork`. This prevents Grok's `new` and `load` events from launching the imported Herdr Claude hook, without disabling unrelated Claude-compatible hooks. Reinstall the Claude integration after upgrading to migrate the previous wildcard matcher. New Claude source values require an integration update.
 
@@ -201,7 +201,7 @@ V1 TUI reporting follows the pane's selected session and its descendants. The pa
 
 Local V1 `opencode run` and `opencode --mini` retain their legacy server hooks; this change does not add pane-local lifecycle reporting to Mini/headless clients. After updating the integration, restart shared OpenCode servers as well as their TUIs so the old server reporter cannot overwrite pane-local state.
 
-The plugin reports lifecycle state and session identity while OpenCode runs inside a Herdr pane. After OpenCode emits a session-bearing event, Herdr can use the reported session id to resume the pane with `opencode --session <id>`. Native screen manifest detection remains available when the plugin is not installed.
+The plugin reports lifecycle state, session identity, and the selected root session's title while OpenCode runs inside a Herdr pane. The title appears in the Agents sidebar when available and updates when OpenCode renames the session. After OpenCode emits a session-bearing event, Herdr can use the reported session id to resume the pane with `opencode --session <id>`. Native screen manifest detection remains available when the plugin is not installed.
 
 ## Kilo Code CLI
 

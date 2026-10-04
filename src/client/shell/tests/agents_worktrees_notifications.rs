@@ -650,6 +650,51 @@ fn pane_cycle_last_and_agent_actions_resolve_to_stable_pane_ids() {
 }
 
 #[test]
+fn claude_sidebar_uses_stripped_activity_title_as_session_name() {
+    let mut projected = snapshot();
+    projected.agents.push(ClientShellAgent {
+        pane_id: "pane_1".into(),
+        workspace_id: "ws_1".into(),
+        tab_id: "tab_1".into(),
+        name: None,
+        display_agent: None,
+        agent: Some("claude".into()),
+        title: None,
+        terminal_title: Some("✳ DGX Spark network setup".into()),
+        terminal_title_stripped: Some("DGX Spark network setup".into()),
+        agent_status: AgentStatus::Idle,
+        state_change_seq: 1,
+        state_labels: Vec::new(),
+        tokens: Vec::new(),
+        focused: true,
+    });
+    let config = ClientShellConfig::from_config(&Config::default());
+
+    let row = super::agent_sidebar::agent_row(&projected, "pane_1", &config, None)
+        .expect("Claude agent row");
+    assert_eq!(row.rows.len(), 3);
+    assert_eq!(
+        row.rows[2][0].kind,
+        crate::ui::ResolvedTokenKind::Custom("DGX Spark network setup".into())
+    );
+
+    projected.agents[0].tokens = vec![("session_title".into(), "Explicit title".into())];
+    let row = super::agent_sidebar::agent_row(&projected, "pane_1", &config, None)
+        .expect("Claude agent row");
+    assert_eq!(
+        row.rows[2][0].kind,
+        crate::ui::ResolvedTokenKind::Custom("Explicit title".into())
+    );
+
+    projected.agents[0].tokens.clear();
+    projected.agents[0].terminal_title = Some("ordinary shell title".into());
+    projected.agents[0].terminal_title_stripped = Some("ordinary shell title".into());
+    let row = super::agent_sidebar::agent_row(&projected, "pane_1", &config, None)
+        .expect("Claude agent row");
+    assert_eq!(row.rows.len(), 2);
+}
+
+#[test]
 fn agent_sidebar_honors_priority_symbols_tokens_and_stable_hits() {
     let mut projected = snapshot();
     let mut second_pane = projected.panes[0].clone();

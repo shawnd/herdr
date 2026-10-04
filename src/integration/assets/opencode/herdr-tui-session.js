@@ -7,10 +7,13 @@ import net from "node:net";
 
 const SOURCE = "herdr:opencode";
 const AGENT = "opencode";
+const TITLE_SOURCE = "herdr:opencode:session-title";
 const ROUTE_POLL_INTERVAL_MS = 100;
+const TITLE_TTL_MS = 60_000;
+const TITLE_REFRESH_MS = 30_000;
 const SELECTION_RETRY_DELAYS_MS = [100, 400, 1_000];
 
-function requestOnce(sessionID, state, seq, isCurrent = () => true) {
+function requestOnce(sessionID, state, seq, isCurrent = () => true, title) {
   const paneId = process.env.HERDR_PANE_ID;
   const socketPath = process.env.HERDR_SOCKET_PATH;
   if (!paneId || !socketPath) {
@@ -23,12 +26,14 @@ function requestOnce(sessionID, state, seq, isCurrent = () => true) {
     id: `${SOURCE}:tui:${Date.now()}:${Math.floor(Math.random() * 1_000_000)
       .toString()
       .padStart(6, "0")}`,
-    method: state === undefined ? "pane.report_agent_session" : "pane.report_agent",
-    params: {
-      pane_id: paneId,
-      source: SOURCE,
-      agent: AGENT,
-      agent_session_id: sessionID,
+    method: title !== undefined ? "pane.report_metadata" :
+      state === undefined ? "pane.report_agent_session" : "pane.report_agent",
+    params: title !== undefined ? {
+      pane_id: paneId, source: TITLE_SOURCE, agent: AGENT, seq,
+      tokens: { session_title: title },
+      ttl_ms: TITLE_TTL_MS,
+    } : {
+      pane_id: paneId, source: SOURCE, agent: AGENT, agent_session_id: sessionID,
       ...(state === undefined ? { session_start_source: "select" } : { state, seq }),
     },
   };
@@ -60,6 +65,10 @@ function requestOnce(sessionID, state, seq, isCurrent = () => true) {
     client.on("end", () => settle(false));
     client.on("close", () => settle(false));
   });
+}
+
+function sessionTitle(session) {
+  return typeof session?.title === "string" && session.title.trim() ? session.title : null;
 }
 
 export default {
@@ -170,6 +179,14 @@ async function tui(api) {
         ctx.selectionPending = false;
         ctx.lastState = undefined;
       }
+      const title = ctx.settled ? null : sessionTitle(ctx.sessions.get(selected) ?? api.state.session.get(selected));
+      if (title !== ctx.lastTitle || (title && Date.now() >= ctx.titleRefreshAt)) {
+        const delivered = await requestOnce(selected, undefined, ++sequence, isCurrent, title);
+        if (!isCurrent()) return;
+        ctx.lastTitle = delivered ? title : undefined;
+        if (delivered) ctx.titleRefreshAt = Date.now() + TITLE_REFRESH_MS;
+        if (!delivered) ctx.retryAt = Date.now() + 500;
+      }
       const value = state(ctx);
       if (value === undefined || value === ctx.lastState) return;
       const delivered = await requestOnce(selected, value, ++sequence, isCurrent);
@@ -187,7 +204,7 @@ async function tui(api) {
   function retire(ctx, route) {
     ctx?.controller?.abort();
     context = ctx?.selected
-      ? { route, selected: ctx.selected, settled: true, retryAt: Infinity }
+      ? { route, selected: ctx.selected, settled: true, retryAt: Infinity, lastTitle: ctx.lastTitle }
       : undefined;
     if (context) publish(context);
   }
@@ -354,6 +371,8 @@ async function tui(api) {
         route: id, boundary, controller: new AbortController(), sessions: new Map(), lookups: new Map(),
         statuses: new Map(), blockers: new Map(), errors: new Set(), deleted: new Set(),
         events: [], hydrated: false, loading: false, resolving: false,
+        lastTitle: context?.lastTitle ?? null,
+        titleRefreshAt: context?.lastTitle ? 0 : Infinity,
         retryAt: Infinity, selectionAt: 0, retryIndex: 0,
       };
       context = ctx;
@@ -362,6 +381,7 @@ async function tui(api) {
     }
     const ctx = context;
     if (!ctx) return;
+    if (!ctx.settled && ctx.selected && ctx.lastTitle && Date.now() >= ctx.titleRefreshAt) publish(ctx);
     if (!ctx.settled && ctx.selected && Date.now() >= ctx.selectionAt) {
       publish(ctx, true);
       const delay = SELECTION_RETRY_DELAYS_MS[ctx.retryIndex++];
@@ -414,6 +434,8 @@ function setup(api) {
   let retryIndex = 0;
   let nextSelectionAt = 0;
   let state = "idle";
+  let lastTitle = null;
+  let titleRefreshAt = 0;
   let retryTimer;
   const sessions = new Map();
   let blockers = new Map();
@@ -447,6 +469,15 @@ function setup(api) {
       if (!isCurrent()) return;
       const delivered = await requestOnce(sessionID, value, value === undefined ? undefined : ++sequence, isCurrent);
       if (!delivered) scheduleStateRetry();
+      if (!isCurrent()) return;
+      const title = sessionTitle(sessions.get(sessionID) ?? api.data.session.get(sessionID));
+      if (title !== lastTitle || (title && Date.now() >= titleRefreshAt)) {
+        const titleDelivered = await requestOnce(sessionID, undefined, ++sequence, isCurrent, title);
+        if (!isCurrent()) return;
+        lastTitle = titleDelivered ? title : undefined;
+        if (titleDelivered) titleRefreshAt = Date.now() + TITLE_REFRESH_MS;
+        if (!titleDelivered) scheduleStateRetry();
+      }
     }).catch(() => {});
   }
 
@@ -510,9 +541,21 @@ function setup(api) {
     if (disposed) return;
     const id = current();
     if (id !== selected) {
+      const previous = selected;
       selected = id;
       generation += 1;
+      if (!id && previous && lastTitle != null) {
+        const revision = generation;
+        chain = chain.then(async () => {
+          const isCurrent = () => !disposed && revision === generation && current() === undefined;
+          if (!isCurrent()) return;
+          if (await requestOnce(previous, undefined, ++sequence, isCurrent, null) && isCurrent()) {
+            lastTitle = null;
+          }
+        }).catch(() => {});
+      }
       retryIndex = 0;
+      titleRefreshAt = 0;
       nextSelectionAt = 0;
       blockers.clear();
       blockerChanges.clear();
@@ -523,6 +566,7 @@ function setup(api) {
     if (!id) return;
     const blockersChanged = reconcileBlockers();
     if (Date.now() < nextSelectionAt) {
+      if (Date.now() >= titleRefreshAt && lastTitle) enqueue(blockers.size ? "blocked" : state);
       if (blockersChanged) publish();
       return;
     }
@@ -537,7 +581,13 @@ function setup(api) {
     const data = event.data;
     if (data == null) return;
     if (event.type === "session.created") {
-      sessions.set(data.sessionID, { id: data.sessionID, parentID: data.parentID });
+      sessions.set(data.sessionID, data.info ?? { id: data.sessionID, parentID: data.parentID, title: data.title });
+    }
+    if (event.type === "session.updated") {
+      const info = data.info ?? data;
+      if (typeof info.title === "string") {
+        sessions.set(data.sessionID, { ...sessions.get(data.sessionID), id: data.sessionID, title: info.title });
+      }
     }
     if (event.type === "session.deleted") {
       const affected = data.sessionID === selected || [...blockers.values()].includes(data.sessionID);
@@ -555,6 +605,10 @@ function setup(api) {
     syncSelection();
     const id = event.type === "form.created" ? data.form.sessionID : data.sessionID;
     if (!selected || root(id) !== selected) return;
+    if (event.type === "session.updated" && id === selected) {
+      enqueue(blockers.size ? "blocked" : state);
+      return;
+    }
     switch (event.type) {
       case "permission.asked":
         changeBlocker(id, "permission", data.id, true);

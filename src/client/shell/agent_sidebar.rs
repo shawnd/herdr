@@ -283,7 +283,7 @@ pub(super) fn agent_row(
         .iter()
         .cloned()
         .collect::<HashMap<_, _>>();
-    let tokens = agent.tokens.iter().cloned().collect::<HashMap<_, _>>();
+    let mut tokens = agent.tokens.iter().cloned().collect::<HashMap<_, _>>();
     let state_text = labels
         .get(status_text(agent.agent_status))
         .map(String::as_str)
@@ -292,6 +292,18 @@ pub(super) fn agent_row(
         .agent
         .as_deref()
         .and_then(crate::detect::parse_agent_label);
+    // Claude's activity-prefixed OSC title carries its conversation name.
+    // Only use it when the prefix was actually stripped, so a shell's ordinary
+    // terminal title cannot be mistaken for a Claude session name.
+    if canonical_agent == Some(crate::detect::Agent::Claude)
+        && agent.terminal_title != agent.terminal_title_stripped
+    {
+        if let Some(title) = agent.terminal_title_stripped.as_deref() {
+            tokens
+                .entry("session_title".to_string())
+                .or_insert_with(|| title.to_string());
+        }
+    }
     let rows = crate::ui::sidebar_agent_rows(
         &config.agents,
         crate::ui::AgentTokenContext {

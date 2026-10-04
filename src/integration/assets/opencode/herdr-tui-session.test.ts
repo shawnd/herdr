@@ -69,7 +69,7 @@ async function loadPlugin() {
 }
 
 function fakeApi() {
-  const sessions = new Map<string, { id: string; parentID?: string }>();
+  const sessions = new Map<string, { id: string; parentID?: string; title?: string }>();
   const statuses: Record<string, { type: string }> = {};
   const permissions: Array<{ id: string; sessionID: string; tool?: { messageID: string; callID: string } }> = [];
   const questions: typeof permissions = [];
@@ -131,7 +131,7 @@ function fakeApi() {
         },
       },
     },
-    addSession(session: { id: string; parentID?: string }) {
+    addSession(session: { id: string; parentID?: string; title?: string }) {
       sessions.set(session.id, session);
     },
     select(sessionID: string) {
@@ -239,7 +239,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function v2Api() {
-  const sessions = new Map([
+  const sessions = new Map<string, { id: string; parentID?: string; title?: string }>([
     ["a", { id: "a" }],
     ["b", { id: "b" }],
     ["child", { id: "child", parentID: "a" }],
@@ -291,6 +291,58 @@ function familyApi() {
   tui.select("root");
   return tui;
 }
+
+const titleReports = () => requests.filter((r) => isRecord(r) && r.method === "pane.report_metadata");
+
+test("V1 reports the selected root title and clears it on selection or home", async () => {
+  const tui = familyApi();
+  tui.addSession({ id: "root", title: "Review parser" });
+  tui.addSession({ id: "other", title: "Ship release" });
+  await (await loadPlugin()).tui(tui.api);
+  await flushReports();
+  expect(requestParam(titleReports().at(-1), "tokens")).toEqual({ session_title: "Review parser" });
+
+  tui.emit("session.updated", { info: { id: "root", title: "Review rendering" } });
+  await flushReports();
+  expect(requestParam(titleReports().at(-1), "tokens")).toEqual({ session_title: "Review rendering" });
+  tui.emit("session.updated", { info: { id: "other", title: "Unrelated" } });
+  await flushReports();
+  expect(requestParam(titleReports().at(-1), "tokens")).toEqual({ session_title: "Review rendering" });
+
+  tui.select("other");
+  tui.emit("session.updated", { info: { id: "other", title: "Ship release" } });
+  await flushReports();
+  expect(requestParam(titleReports().at(-1), "tokens")).toEqual({ session_title: "Ship release" });
+  tui.home();
+  tui.emit("session.updated", { info: { id: "other" } });
+  await flushReports();
+  expect(requestParam(titleReports().at(-1), "tokens")).toEqual({ session_title: null });
+});
+
+test("V2 reports title changes and clears the previous session title", async () => {
+  const tui = v2Api();
+  tui.sessions.set("a", { id: "a", title: "Investigate issue" });
+  const dispose = await (await loadPlugin()).setup(tui.api);
+  activeDisposers.push(dispose);
+  await flushReports();
+  expect(requestParam(titleReports().at(-1), "tokens")).toEqual({ session_title: "Investigate issue" });
+
+  tui.sessions.set("a", { id: "a", title: "Fix issue" });
+  tui.emit("session.updated", { sessionID: "a", title: "Fix issue" });
+  await flushReports();
+  expect(requestParam(titleReports().at(-1), "tokens")).toEqual({ session_title: "Fix issue" });
+  tui.select("b");
+  await new Promise((resolve) => setTimeout(resolve, 125));
+  expect(requestParam(titleReports().at(-1), "tokens")).toEqual({ session_title: null });
+
+  tui.sessions.set("b", { id: "b", title: "New session" });
+  tui.emit("session.updated", { sessionID: "b", title: "New session" });
+  await flushReports();
+  expect(requestParam(titleReports().at(-1), "tokens")).toEqual({ session_title: "New session" });
+  tui.home();
+  await new Promise((resolve) => setTimeout(resolve, 125));
+  expect(requestParam(titleReports().at(-1), "tokens")).toEqual({ session_title: null });
+});
 
 test("V1 hydrates active descendants and keeps working until the whole family settles", async () => {
   const tui = familyApi();
