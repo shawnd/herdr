@@ -1,6 +1,7 @@
 use super::*;
 
 mod settings_overlay;
+mod transfer_overlay;
 mod worktree_overlays;
 
 #[derive(Default)]
@@ -79,6 +80,7 @@ pub(crate) fn render_client_overlay(
         ClientShellOverlay::WorktreeRemove(v) => {
             worktree_overlays::render_worktree_remove_overlay(b, v, p)
         }
+        ClientShellOverlay::Transfer(v) => transfer_overlay::render_transfer_overlay(b, v, p),
         ClientShellOverlay::ContextMenu(_) | ClientShellOverlay::GlobalMenu(_) => None,
     }
 }

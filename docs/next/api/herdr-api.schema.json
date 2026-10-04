@@ -4357,6 +4357,26 @@
           ],
           "type": "object"
         },
+        "TabTransferParams": {
+          "description": "Transfer a whole tab to another workspace without replacing its terminals.",
+          "properties": {
+            "focus": {
+              "default": false,
+              "type": "boolean"
+            },
+            "tab_id": {
+              "type": "string"
+            },
+            "workspace_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "tab_id",
+            "workspace_id"
+          ],
+          "type": "object"
+        },
         "ToastHerdrPosition": {
           "enum": [
             "top-left",
@@ -4520,6 +4540,49 @@
           },
           "required": [
             "workspace_id"
+          ],
+          "type": "object"
+        },
+        "WorkspaceTransferImportParams": {
+          "description": "Same-install invitation to receive a staged local workspace handoff.",
+          "properties": {
+            "socket_path": {
+              "type": "string"
+            },
+            "token": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "socket_path",
+            "token"
+          ],
+          "type": "object"
+        },
+        "WorkspaceTransferParams": {
+          "properties": {
+            "session": {
+              "description": "Another local session on the server's machine; started if stopped.",
+              "type": "string"
+            },
+            "workspace_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "workspace_id",
+            "session"
+          ],
+          "type": "object"
+        },
+        "WorkspaceTransferStatusParams": {
+          "properties": {
+            "token": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "token"
           ],
           "type": "object"
         },
@@ -4924,6 +4987,22 @@
         {
           "properties": {
             "method": {
+              "const": "session.list",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "workspace.create",
               "type": "string"
             },
@@ -5009,6 +5088,70 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/WorkspaceMoveParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "workspace.transfer",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkspaceTransferParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "workspace.transfer.import",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkspaceTransferImportParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "workspace.transfer.status",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkspaceTransferStatusParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "workspace.transfer.cancel",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkspaceTransferStatusParams"
             }
           },
           "required": [
@@ -5217,6 +5360,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/TabMoveParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "tab.transfer",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TabTransferParams"
             }
           },
           "required": [
@@ -9218,6 +9377,25 @@
             },
             {
               "properties": {
+                "sessions": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/SessionDestinationInfo"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "session_list",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "sessions"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
                 "type": {
                   "const": "workspace_info",
                   "type": "string"
@@ -9272,6 +9450,46 @@
               "required": [
                 "type",
                 "workspaces"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "session": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "workspace_transferred",
+                  "type": "string"
+                },
+                "workspace_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "workspace_id",
+                "session"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "cancelled": {
+                  "default": false,
+                  "type": "boolean"
+                },
+                "committed": {
+                  "type": "boolean"
+                },
+                "type": {
+                  "const": "workspace_transfer_status",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "committed"
               ],
               "type": "object"
             },
@@ -10454,6 +10672,26 @@
           },
           "required": [
             "live_handoff"
+          ],
+          "type": "object"
+        },
+        "SessionDestinationInfo": {
+          "description": "Local session destinations, resolved by the server rather than the client.",
+          "properties": {
+            "current": {
+              "type": "boolean"
+            },
+            "name": {
+              "type": "string"
+            },
+            "running": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "name",
+            "current",
+            "running"
           ],
           "type": "object"
         },

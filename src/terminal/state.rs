@@ -12,6 +12,8 @@ use crate::terminal::TerminalId;
 
 #[path = "metadata.rs"]
 mod metadata;
+#[cfg(unix)]
+pub(crate) use metadata::TransferTerminalMetadata;
 pub use metadata::{AgentMetadata, AgentMetadataReport, EffectivePresentation};
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -50,6 +52,7 @@ struct PendingFullLifecycleHookReport {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(unix, derive(serde::Serialize, serde::Deserialize))]
 enum FullLifecycleHookSuppressionReason {
     HookClear,
     ProcessExit,
@@ -62,6 +65,7 @@ enum FullLifecycleHookReportRoute {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(unix, derive(serde::Serialize, serde::Deserialize))]
 struct StaleFullLifecycleHookSession {
     agent_label: String,
     session_ref: crate::agent_resume::AgentSessionRef,
@@ -3410,6 +3414,145 @@ mod tests {
 
         assert!(terminal.full_lifecycle_hook_authority_active());
         assert_eq!(terminal.state, AgentState::Working);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn transfer_replays_startup_and_working_reports_before_process_evidence() {
+        for restarting in [false, true] {
+            let mut control = test_terminal();
+            let stale_ref = crate::agent_resume::AgentSessionRef::path(test_session_path(
+                "transfer-stale-session.jsonl",
+            ));
+            if restarting {
+                anchor_full_lifecycle_session(
+                    &mut control,
+                    Agent::Pi,
+                    "herdr:pi",
+                    "pi",
+                    stale_ref.clone().unwrap(),
+                );
+                control.set_detected_state_with_screen_signals_at(
+                    Some(Agent::Pi),
+                    AgentState::Idle,
+                    false,
+                    true,
+                    false,
+                    true,
+                    Instant::now(),
+                );
+                let previous_ref = crate::agent_resume::AgentSessionRef::path(test_session_path(
+                    "transfer-previous-session.jsonl",
+                ));
+                control.set_agent_session_ref_for_session_start(
+                    "herdr:pi".into(),
+                    "pi".into(),
+                    previous_ref.clone(),
+                    Some(2),
+                    Some("startup".into()),
+                );
+                control.set_detected_state(Some(Agent::Pi), AgentState::Idle);
+                assert!(control.full_lifecycle_hook_report_matches_stale_session(
+                    "herdr:pi", "pi", &stale_ref,
+                ));
+                control.set_hook_authority_with_session_ref(
+                    "herdr:pi".into(),
+                    "pi".into(),
+                    AgentState::Working,
+                    None,
+                    previous_ref,
+                    Some(3),
+                );
+                control.set_detected_state_with_screen_signals_at(
+                    Some(Agent::Pi),
+                    AgentState::Idle,
+                    false,
+                    true,
+                    false,
+                    true,
+                    Instant::now(),
+                );
+            }
+            let session_ref = crate::agent_resume::AgentSessionRef::path(test_session_path(
+                "transfer-reports-before-process-evidence.jsonl",
+            ));
+            assert!(control
+                .set_agent_session_ref_for_session_start(
+                    "herdr:pi".into(),
+                    "pi".into(),
+                    session_ref.clone(),
+                    Some(10),
+                    Some("startup".into()),
+                )
+                .is_none());
+            assert!(control
+                .set_hook_authority_with_session_ref(
+                    "herdr:pi".into(),
+                    "pi".into(),
+                    AgentState::Working,
+                    Some("buffered work".into()),
+                    session_ref.clone(),
+                    Some(11),
+                )
+                .is_none());
+            assert!(!control.full_lifecycle_hook_authority_active());
+
+            let bytes = serde_json::to_vec(&control.capture_transfer_metadata()).unwrap();
+            let metadata = serde_json::from_slice(&bytes).unwrap();
+            let mut restored = test_terminal();
+            restored.restore_transfer_metadata(metadata);
+            // Model a restored terminal with the same process identity: a
+            // restart still needs the preserved process-exit guard.
+            restored.detected_agent = control.detected_agent;
+            let evidence_at = Instant::now() + Duration::from_millis(1);
+            for terminal in [&mut control, &mut restored] {
+                terminal.set_detected_state_with_screen_signals_at(
+                    Some(Agent::Pi),
+                    AgentState::Idle,
+                    false,
+                    true,
+                    false,
+                    false,
+                    evidence_at,
+                );
+                assert!(terminal.full_lifecycle_hook_authority_active());
+                assert_eq!(terminal.state, AgentState::Working);
+                let authority = terminal.hook_authority.as_ref().unwrap();
+                assert_eq!(authority.session_ref, session_ref);
+                assert_eq!(authority.message.as_deref(), Some("buffered work"));
+                assert_eq!(terminal.hook_report_sequences.get("herdr:pi"), Some(&11));
+                if restarting {
+                    assert!(terminal
+                        .set_hook_authority_with_session_ref(
+                            "herdr:pi".into(),
+                            "pi".into(),
+                            AgentState::Idle,
+                            None,
+                            stale_ref.clone(),
+                            Some(100),
+                        )
+                        .is_none());
+                } else {
+                    // Fresh sessions after a retired generation can reanchor
+                    // their sequence; initial acquisition rejects older reports.
+                    assert!(terminal
+                        .set_hook_authority_with_session_ref(
+                            "herdr:pi".into(),
+                            "pi".into(),
+                            AgentState::Idle,
+                            None,
+                            session_ref.clone(),
+                            Some(10),
+                        )
+                        .is_none());
+                }
+                assert_eq!(terminal.state, AgentState::Working);
+                assert_eq!(
+                    terminal.hook_authority.as_ref().unwrap().session_ref,
+                    session_ref
+                );
+            }
+        }
     }
 
     #[test]

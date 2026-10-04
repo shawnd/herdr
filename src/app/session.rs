@@ -102,6 +102,49 @@ impl App {
         self.session_save_deadline = None;
     }
 
+    /// Queue a topology checkpoint behind every older save without joining a
+    /// writer on the server loop. In particular, an older pre-transfer snapshot
+    /// must never become the final on-disk state after workspace removal.
+    pub(crate) fn checkpoint_session_after_transfer(&mut self) {
+        if !self.policy.persist_session {
+            return;
+        }
+        let previous = self.session_save_thread.take();
+        let job = self.capture_session_save_job();
+        let writer = self.session_writer.clone();
+        let queued = std::sync::Arc::new(std::sync::Mutex::new(Some((previous, job))));
+        let worker_queue = queued.clone();
+        let worker_writer = writer.clone();
+        self.session_save_deadline = None;
+        self.pane_exit_checkpoint_pending = false;
+        self.state.session_dirty = false;
+        match std::thread::Builder::new()
+            .name("herdr-transfer-session-save".into())
+            .spawn(move || {
+                let work = worker_queue.lock().ok().and_then(|mut work| work.take());
+                if let Some((previous, job)) = work {
+                    if let Some(previous) = previous {
+                        let _ = previous.join();
+                    }
+                    run_session_save_job(job, &worker_writer);
+                }
+            }) {
+            Ok(thread) => self.session_save_thread = Some(thread),
+            Err(error) => {
+                // Keep the old join handle in the shared envelope until spawn
+                // succeeds so this rare inline fallback still orders writers.
+                tracing::warn!(%error, "failed to spawn transfer checkpoint writer");
+                let work = queued.lock().ok().and_then(|mut work| work.take());
+                if let Some((previous, job)) = work {
+                    if let Some(previous) = previous {
+                        let _ = previous.join();
+                    }
+                    run_session_save_job(job, &writer);
+                }
+            }
+        }
+    }
+
     pub(crate) fn checkpoint_session_before_pane_exit(&mut self) {
         if !self.policy.persist_session
             || (self.pane_exit_checkpoint_pending && !self.state.session_dirty)

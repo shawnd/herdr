@@ -17,6 +17,8 @@ A tab is a layout inside a workspace. Use tabs to separate views like `agents`, 
 
 Tabs are addressable from the CLI and socket API.
 
+Right-click a tab and choose **Move to space...** to move its layout and running panes to another workspace in the same session. Choose a destination by clicking it or using the arrow keys and Enter. Use `/` to filter destinations; Escape or **cancel** closes the picker without changing focus.
+
 ## Pane
 
 A pane is a real terminal. Herdr renders the terminal output, sends input back to the process, and preserves the pane across client detach.
@@ -63,6 +65,12 @@ herdr session attach side-project
 ```
 
 Use workspaces first. Use named sessions when you need completely separate panes, sockets, and persisted runtime state.
+
+Right-click a workspace and choose **Move to session...** to move it, its tabs, and its running terminals into another local session. The picker lists saved sessions on the source server's machine, including when you are attached over SSH, and excludes the current session. Stopped sessions are labeled **starts when moved**: confirming the move starts the destination in the background, restores its saved spaces, and adds the transferred space. Transfers currently require Unix servers on the same machine. Servers without transfer support show an action-unavailable notice.
+
+Existing processes keep their inherited session environment. The source server forwards their pane hooks and caller requests to the destination, so keep that source server running while those processes are active. Use the destination session when issuing commands with the returned destination ids.
+
+Worktree-linked workspaces and repeat cross-session transfers of an imported workspace are not supported yet.
 
 ## Client and server
 

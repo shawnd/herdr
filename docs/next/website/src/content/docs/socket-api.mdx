@@ -99,10 +99,10 @@ Raw socket method names use dot notation:
 | Server | `ping`, `server.stop`, `server.reload_config`, `server.agent_manifests`, `server.reload_agent_manifests` |
 | Notification | `notification.show` |
 | Client | `client.window_title.set`, `client.window_title.clear` |
-| Session | `session.snapshot` |
-| Workspace | `workspace.create`, `workspace.list`, `workspace.get`, `workspace.focus`, `workspace.rename`, `workspace.move`, `workspace.move_block`, `workspace.report_metadata`, `workspace.close` |
+| Session | `session.snapshot`, `session.list` |
+| Workspace | `workspace.create`, `workspace.list`, `workspace.get`, `workspace.focus`, `workspace.rename`, `workspace.move`, `workspace.move_block`, `workspace.transfer`, `workspace.report_metadata`, `workspace.close` |
 | Worktree | `worktree.list`, `worktree.create`, `worktree.open`, `worktree.remove` |
-| Tab | `tab.create`, `tab.list`, `tab.get`, `tab.focus`, `tab.rename`, `tab.move`, `tab.close` |
+| Tab | `tab.create`, `tab.list`, `tab.get`, `tab.focus`, `tab.rename`, `tab.move`, `tab.transfer`, `tab.close` |
 | Pane | `pane.split`, `pane.swap`, `pane.move`, `pane.zoom`, `pane.layout`, `pane.process_info`, `pane.neighbor`, `pane.edges`, `pane.focus_direction`, `pane.resize`, `pane.list`, `pane.current`, `pane.get`, `pane.rename`, `pane.send_text`, `pane.send_keys`, `pane.send_input`, `pane.read`, `pane.report_agent`, `pane.report_agent_session`, `pane.report_metadata`, `pane.clear_agent_authority`, `pane.release_agent`, `pane.close`, `pane.wait_for_output` |
 | Popup | `popup.close` |
 | Layout | `layout.export`, `layout.apply`, `layout.set_split_ratio` |
@@ -114,6 +114,12 @@ Raw socket method names use dot notation:
 `agent.wait` is server-owned and event-driven. It pins the resolved pane occupant so a replacement cannot satisfy the wait. `agent.prompt` accepts an optional `wait` object with `until` and `timeout_ms`; this submits the prompt and starts the wait in one request, avoiding a race between separate calls. If the resolved agent is already `blocked`, `agent.prompt` returns `agent_blocked` without sending input or starting the wait.
 
 `workspace.move_block` atomically moves the ordered `workspace_ids` before `before_workspace_id`; omit the anchor to move the block to the end. The ids must be unique and the anchor cannot be part of the block. The response contains the authoritative ordered workspace list.
+
+`tab.transfer` takes `tab_id`, a destination `workspace_id`, and optional `focus` (default `false`). It moves the complete tab, including its split layout, focused pane, zoom, and running terminals, and returns `tab_info` with the new public tab id. Destination tab and pane ids are newly allocated; inherited pane caller ids continue resolving within the session. Moving the last tab removes only its empty source workspace. `tab.move` remains a reorder operation within one workspace.
+
+`session.list` returns `session_list` with local destination records (`name`, `current`, `running`) on the server's machine. `workspace.transfer` takes `workspace_id` and destination `session`; the right-click **Move to session...** picker uses these methods. A stopped destination is started in the background and restores its saved spaces before receiving the incoming workspace. Transfers require compatible Unix servers on the same machine and preserve live processes. Use `herdr tab transfer <tab_id> --workspace <workspace_id> [--focus]` or `herdr workspace transfer <workspace_id> --to-session <name>` from the CLI.
+
+A successful workspace transfer returns `workspace_transferred` with the destination `workspace_id` and `session`. Existing processes still address their inherited source socket: the source server forwards their pane hooks and caller requests, and must keep running for that routing. Commands using newly returned destination ids should target the destination session explicitly.
 
 `session.snapshot` returns a one-time bootstrap snapshot for clients that keep
 their own local runtime cache. The response includes version/protocol metadata,

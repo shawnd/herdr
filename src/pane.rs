@@ -1443,6 +1443,21 @@ impl PaneRuntimeIo {
     }
 
     #[cfg(unix)]
+    fn resume_after_commit(
+        &self,
+    ) -> std::io::Result<std::sync::mpsc::Receiver<std::io::Result<()>>> {
+        match self {
+            PaneRuntimeIo::Actor(actor) => actor.resume_after_commit(),
+            #[cfg(test)]
+            PaneRuntimeIo::TestChannel { .. } => {
+                let (reply, ack) = std::sync::mpsc::channel();
+                let _ = reply.send(Ok(()));
+                Ok(ack)
+            }
+        }
+    }
+
+    #[cfg(unix)]
     fn release_after_commit(&self) -> std::io::Result<()> {
         match self {
             PaneRuntimeIo::Actor(actor) => actor.release_after_commit(),
@@ -2140,6 +2155,13 @@ impl PaneRuntime {
                 "failed to update PTY actor handoff pause state"
             );
         }
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn resume_handoff_reader_after_commit(
+        &self,
+    ) -> std::io::Result<std::sync::mpsc::Receiver<std::io::Result<()>>> {
+        self.io.resume_after_commit()
     }
 
     #[cfg(unix)]

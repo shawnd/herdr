@@ -95,10 +95,10 @@ herdr pane read w1:p2 --source recent --lines 50
 | 服务器 | `ping`、`server.stop`、`server.reload_config`、`server.agent_manifests`、`server.reload_agent_manifests` |
 | 通知 | `notification.show` |
 | 客户端 | `client.window_title.set`、`client.window_title.clear` |
-| 会话 | `session.snapshot` |
-| 工作区 | `workspace.create`、`workspace.list`、`workspace.get`、`workspace.focus`、`workspace.rename`、`workspace.move`、`workspace.move_block`、`workspace.report_metadata`、`workspace.close` |
+| 会话 | `session.snapshot`、`session.list` |
+| 工作区 | `workspace.create`、`workspace.list`、`workspace.get`、`workspace.focus`、`workspace.rename`、`workspace.move`、`workspace.move_block`、`workspace.transfer`、`workspace.report_metadata`、`workspace.close` |
 | Worktree | `worktree.list`、`worktree.create`、`worktree.open`、`worktree.remove` |
-| 标签页 | `tab.create`、`tab.list`、`tab.get`、`tab.focus`、`tab.rename`、`tab.move`、`tab.close` |
+| 标签页 | `tab.create`、`tab.list`、`tab.get`、`tab.focus`、`tab.rename`、`tab.move`、`tab.transfer`、`tab.close` |
 | 窗格 | `pane.split`、`pane.swap`、`pane.move`、`pane.zoom`、`pane.layout`、`pane.process_info`、`pane.neighbor`、`pane.edges`、`pane.focus_direction`、`pane.resize`、`pane.list`、`pane.current`、`pane.get`、`pane.rename`、`pane.send_text`、`pane.send_keys`、`pane.send_input`、`pane.read`、`pane.report_agent`、`pane.report_agent_session`、`pane.report_metadata`、`pane.clear_agent_authority`、`pane.release_agent`、`pane.close`、`pane.wait_for_output` |
 | 弹窗 | `popup.close` |
 | 布局 | `layout.export`、`layout.apply`、`layout.set_split_ratio` |
@@ -110,6 +110,12 @@ herdr pane read w1:p2 --source recent --lines 50
 `agent.wait` 由服务器拥有并由事件驱动。它会固定到已解析的窗格占用者,因此替换后的智能体不能满足该等待。`agent.prompt` 接受可选的 `wait` 对象,其中包含 `until` 和 `timeout_ms`;这样可在一个请求中提交提示并开始等待,避免两个独立调用之间的竞态。如果解析出的智能体已经是 `blocked`,`agent.prompt` 不会发送输入或开始等待,而是返回 `agent_blocked`。
 
 `workspace.move_block` 会将有序的 `workspace_ids` 原子地移动到 `before_workspace_id` 之前;省略锚点则将该块移动到末尾。id 必须唯一,且锚点不能属于被移动的块。响应包含服务器确认的有序工作区列表。
+
+`tab.transfer` 接受 `tab_id`、目标 `workspace_id` 和可选的 `focus`（默认 `false`）。它移动整个标签页，包括分屏布局、焦点窗格、缩放状态和运行中的终端，并返回含新公开标签页 id 的 `tab_info`。目标工作区会分配新的标签页和窗格 id；终端继承的窗格调用方 id 仍可在同一会话内解析。移动最后一个标签页时，只移除已空的来源工作区。`tab.move` 仍仅用于在同一工作区内排序。
+
+`session.list` 返回服务器机器上本地会话的 `name`、`current` 和 `running`。`workspace.transfer` 接受 `workspace_id` 和目标 `session`，供右键菜单 **Move to session...** 使用。已停止的目标会在后台启动，先恢复已保存的工作区，再接收转移的工作区。转移要求同一机器上兼容的 Unix 服务器，并保留运行中的进程。CLI 命令为 `herdr tab transfer <tab_id> --workspace <workspace_id> [--focus]` 和 `herdr workspace transfer <workspace_id> --to-session <name>`。
+
+成功时返回 `workspace_transferred`，包含目标 `workspace_id` 和 `session`。现有进程仍使用继承的来源 socket，所以需保持来源服务器运行，以转发窗格钩子和调用方请求。使用新返回的目标 id 发出命令时，请明确指定目标会话。
 
 `session.snapshot` 为维护本地运行时缓存的客户端返回一次性引导快照。响应包含版本/协议元数据、当前聚焦的工作区/标签页/窗格 id、工作区记录、标签页记录、窗格记录、标签页布局快照和智能体记录。它不是订阅。初始化或恢复缓存时,应先建立订阅,再按下文事件订阅部分的说明读取服务器当前状态并核对、更新缓存。事件表示缓存可能过期,不能无条件重放到快照上。重新连接后或本地缓存可能已过期时,再次调用 `session.snapshot`。工作区记录也包含关联 worktree 的来源信息。完整的仓库 worktree 发现仍使用 `worktree.list`。
 

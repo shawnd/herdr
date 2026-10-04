@@ -86,6 +86,10 @@ enum PtyIoControlCommand {
     DuplicateForHandoff(std_mpsc::Sender<std::io::Result<RawFd>>),
     ForegroundProcessGroup(std_mpsc::Sender<Option<u32>>),
     RollbackHandoff(std_mpsc::Sender<std::io::Result<()>>),
+    ResumeAfterCommit {
+        gate: Arc<Mutex<UserWriteGate>>,
+        reply: std_mpsc::Sender<std::io::Result<()>>,
+    },
     ReleaseAfterCommit(std_mpsc::Sender<std::io::Result<()>>),
     Shutdown,
 }
@@ -328,6 +332,23 @@ impl PtyIoActorHandle {
             user_writes.accepting = true;
         }
         result
+    }
+
+    /// Queue committed activation without waiting on the actor's PTY thread.
+    /// The actor opens input only after switching to Running, so input cannot
+    /// race ahead of the resume control and be discarded while quiesced.
+    pub(crate) fn resume_after_commit(
+        &self,
+    ) -> std::io::Result<std_mpsc::Receiver<std::io::Result<()>>> {
+        let (reply, ack) = std_mpsc::channel();
+        self.control_tx
+            .send(PtyIoControlCommand::ResumeAfterCommit {
+                gate: self.user_writes.clone(),
+                reply,
+            })
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "pty actor closed"))?;
+        self.wake_actor();
+        Ok(ack)
     }
 
     pub(crate) fn release_after_commit(&self) -> std::io::Result<()> {
@@ -700,6 +721,22 @@ impl PtyIoActorRunner {
                     ))
                 } else {
                     self.state = ActorState::Running;
+                    Ok(())
+                };
+                let _ = reply.send(result);
+            }
+            PtyIoControlCommand::ResumeAfterCommit { gate, reply } => {
+                let result = if self.state == ActorState::Released {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::BrokenPipe,
+                        "PTY actor was released before committed activation",
+                    ))
+                } else {
+                    self.pending_handoff.take();
+                    self.state = ActorState::Running;
+                    gate.lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .accepting = true;
                     Ok(())
                 };
                 let _ = reply.send(result);
@@ -1597,6 +1634,60 @@ mod tests {
             .recv_timeout(Duration::from_secs(1))
             .expect("actor still reads after duplicate closes");
         assert_eq!(read, Bytes::from_static(b"still-live"));
+        handle.shutdown();
+    }
+
+    #[test]
+    fn committed_resume_queues_without_waiting_for_the_actor() {
+        let (data_tx, _data_rx) = mpsc::channel(1);
+        let (control_tx, control_rx) = std_mpsc::channel();
+        let (wake, _wake_read_fd) = test_wake_pair();
+        let gate = Arc::new(Mutex::new(UserWriteGate { accepting: false }));
+        let handle = PtyIoActorHandle {
+            data_tx,
+            control_tx,
+            wake,
+            user_writes: gate.clone(),
+            controls: Arc::new(Mutex::new(SharedPtyControls::default())),
+            response_order: Arc::new(Mutex::new(())),
+        };
+        let ack = handle
+            .resume_after_commit()
+            .expect("resume queued without servicing actor");
+        assert!(matches!(ack.try_recv(), Err(std_mpsc::TryRecvError::Empty)));
+        assert!(
+            !gate.lock().expect("gate").accepting,
+            "input stays closed before actor switches to Running"
+        );
+        assert!(matches!(
+            control_rx.try_recv(),
+            Ok(PtyIoControlCommand::ResumeAfterCommit { .. })
+        ));
+    }
+
+    #[test]
+    fn committed_resume_ack_means_input_and_output_are_active() {
+        let (handle, mut peer, read_rx) = actor_with_socket_pair(true);
+        handle
+            .resume_after_commit()
+            .expect("queue resume")
+            .recv_timeout(Duration::from_secs(2))
+            .expect("resume ack")
+            .expect("actor resumed");
+        peer.write_all(b"committed-output").expect("output");
+        assert_eq!(
+            read_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("parsed output"),
+            Bytes::from_static(b"committed-output")
+        );
+        handle
+            .try_write_user_input(Bytes::from_static(b"committed-input"))
+            .expect("active input gate");
+        let mut input = [0; 15];
+        peer.read_exact(&mut input)
+            .expect("input reaches child endpoint");
+        assert_eq!(&input, b"committed-input");
         handle.shutdown();
     }
 

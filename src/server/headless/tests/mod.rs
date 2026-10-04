@@ -12,6 +12,8 @@ mod surface_delta_tests;
 mod surface_interest_tests;
 #[path = "surface_scroll.rs"]
 mod surface_scroll_tests;
+#[path = "tab_transfer.rs"]
+mod tab_transfer_tests;
 
 fn client_shell_projection(
     receiver: &std::sync::mpsc::Receiver<Vec<u8>>,
@@ -127,6 +129,8 @@ fn test_headless_server_with_event_hub(event_hub: api::EventHub) -> HeadlessServ
         shutting_down: false,
         host_shutdown_requested: Arc::new(AtomicBool::new(false)),
         handoff_in_progress: false,
+        #[cfg(unix)]
+        workspace_transfers: workspace_transfer::Coordinator::default(),
         #[cfg(unix)]
         pending_handoff_repaint_nudge: false,
         should_quit,

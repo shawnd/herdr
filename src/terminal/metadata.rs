@@ -21,6 +21,67 @@ pub struct AgentMetadata {
     expiry_event_pending: bool,
 }
 
+#[cfg(unix)]
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct TransferTerminalMetadata {
+    captured_at: std::time::SystemTime,
+    reports: Vec<TransferAgentMetadata>,
+    sequences: HashMap<String, u64>,
+    token_sequence_sources: std::collections::HashSet<String>,
+    respawn_shell_on_exit: bool,
+    hook_authority: Option<super::HookAuthority>,
+    hook_sequences: HashMap<String, u64>,
+    acquisition_pending: bool,
+    #[serde(default)]
+    suppressed_hook_reports: HashMap<String, TransferSuppressedHookReport>,
+    #[serde(default)]
+    stale_hook_sessions: HashMap<String, Vec<super::StaleFullLifecycleHookSession>>,
+    #[serde(default)]
+    recent_process_exit: Option<TransferRecentProcessExit>,
+}
+
+#[cfg(unix)]
+#[derive(serde::Serialize, serde::Deserialize)]
+struct TransferSuppressedHookReport {
+    agent_label: String,
+    session_ref: Option<crate::agent_resume::AgentSessionRef>,
+    observed_age: Duration,
+    reason: super::FullLifecycleHookSuppressionReason,
+    replacement_session_ref: Option<crate::agent_resume::AgentSessionRef>,
+    pending_replacement_report: Option<TransferPendingHookReport>,
+}
+
+#[cfg(unix)]
+#[derive(serde::Serialize, serde::Deserialize)]
+struct TransferPendingHookReport {
+    authority: super::HookAuthority,
+    reported_age: Duration,
+    seq: u64,
+}
+
+#[cfg(unix)]
+#[derive(serde::Serialize, serde::Deserialize)]
+struct TransferRecentProcessExit {
+    agent_label: String,
+    observed_age: Duration,
+}
+
+#[cfg(unix)]
+#[derive(serde::Serialize, serde::Deserialize)]
+struct TransferAgentMetadata {
+    source: String,
+    agent_label: Option<String>,
+    applies_to_source: Option<String>,
+    title: Option<String>,
+    display_agent: Option<String>,
+    state_labels: HashMap<String, String>,
+    reported_age: Duration,
+    title_age: Option<Duration>,
+    display_age: Option<Duration>,
+    state_label_ages: HashMap<String, Duration>,
+    ttl: Option<Duration>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentMetadataReport {
     pub source: String,
@@ -54,6 +115,163 @@ impl EffectivePresentation {
 }
 
 impl TerminalState {
+    #[cfg(unix)]
+    pub(crate) fn capture_transfer_metadata(&self) -> TransferTerminalMetadata {
+        let now = Instant::now();
+        TransferTerminalMetadata {
+            captured_at: std::time::SystemTime::now(),
+            reports: self
+                .agent_metadata
+                .values()
+                .map(|m| TransferAgentMetadata {
+                    source: m.source.clone(),
+                    agent_label: m.agent_label.clone(),
+                    applies_to_source: m.applies_to_source.clone(),
+                    title: m.title.clone(),
+                    display_agent: m.display_agent.clone(),
+                    state_labels: m.state_labels.clone(),
+                    reported_age: now.saturating_duration_since(m.reported_at),
+                    title_age: m
+                        .title_reported_at
+                        .map(|t| now.saturating_duration_since(t)),
+                    display_age: m
+                        .display_agent_reported_at
+                        .map(|t| now.saturating_duration_since(t)),
+                    state_label_ages: m
+                        .state_label_reported_at
+                        .iter()
+                        .map(|(k, t)| (k.clone(), now.saturating_duration_since(*t)))
+                        .collect(),
+                    ttl: m.ttl,
+                })
+                .collect(),
+            sequences: self.metadata_report_sequences.clone(),
+            token_sequence_sources: self.metadata_token_sequence_sources.clone(),
+            respawn_shell_on_exit: self.respawn_shell_on_exit,
+            hook_authority: self.hook_authority.clone(),
+            hook_sequences: self.hook_report_sequences.clone(),
+            acquisition_pending: self.agent_process_acquisition_pending,
+            suppressed_hook_reports: self
+                .suppressed_full_lifecycle_hook_reports
+                .iter()
+                .map(|(source, suppressed)| {
+                    (
+                        source.clone(),
+                        TransferSuppressedHookReport {
+                            agent_label: suppressed.agent_label.clone(),
+                            session_ref: suppressed.session_ref.clone(),
+                            observed_age: now.saturating_duration_since(suppressed.observed_at),
+                            reason: suppressed.reason,
+                            replacement_session_ref: suppressed.replacement_session_ref.clone(),
+                            pending_replacement_report: suppressed
+                                .pending_replacement_report
+                                .as_ref()
+                                .map(|pending| TransferPendingHookReport {
+                                    authority: pending.authority.clone(),
+                                    reported_age: now
+                                        .saturating_duration_since(pending.authority.reported_at),
+                                    seq: pending.seq,
+                                }),
+                        },
+                    )
+                })
+                .collect(),
+            stale_hook_sessions: self.stale_full_lifecycle_hook_sessions.clone(),
+            recent_process_exit: self.recent_agent_process_exit.map(|exit| {
+                TransferRecentProcessExit {
+                    agent_label: crate::detect::agent_label(exit.agent).into(),
+                    observed_age: now.saturating_duration_since(exit.observed_at),
+                }
+            }),
+        }
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn restore_transfer_metadata(&mut self, snapshot: TransferTerminalMetadata) {
+        let now = Instant::now();
+        let elapsed = std::time::SystemTime::now()
+            .duration_since(snapshot.captured_at)
+            .unwrap_or_default();
+        let instant = |age: Duration| now.checked_sub(age.saturating_add(elapsed)).unwrap_or(now);
+        self.metadata_report_sequences = snapshot.sequences;
+        self.metadata_token_sequence_sources = snapshot.token_sequence_sources;
+        self.respawn_shell_on_exit = snapshot.respawn_shell_on_exit;
+        self.hook_authority = snapshot.hook_authority;
+        self.hook_report_sequences = snapshot.hook_sequences;
+        self.agent_process_acquisition_pending = snapshot.acquisition_pending;
+        self.suppressed_full_lifecycle_hook_reports = snapshot
+            .suppressed_hook_reports
+            .into_iter()
+            .map(|(source, suppressed)| {
+                (
+                    source,
+                    super::SuppressedFullLifecycleHookReport {
+                        agent_label: suppressed.agent_label,
+                        session_ref: suppressed.session_ref,
+                        observed_at: instant(suppressed.observed_age),
+                        reason: suppressed.reason,
+                        replacement_session_ref: suppressed.replacement_session_ref,
+                        pending_replacement_report: suppressed.pending_replacement_report.map(
+                            |pending| {
+                                let mut authority = pending.authority;
+                                authority.reported_at = instant(pending.reported_age);
+                                super::PendingFullLifecycleHookReport {
+                                    authority,
+                                    seq: pending.seq,
+                                }
+                            },
+                        ),
+                    },
+                )
+            })
+            .collect();
+        self.stale_full_lifecycle_hook_sessions = snapshot.stale_hook_sessions;
+        self.recent_agent_process_exit = snapshot.recent_process_exit.and_then(|exit| {
+            Some(super::RecentAgentProcessExit {
+                agent: crate::detect::parse_agent_label(&exit.agent_label)?,
+                observed_at: instant(exit.observed_age),
+            })
+        });
+        if let Some(authority) = &self.hook_authority {
+            self.detected_agent = crate::detect::parse_agent_label(&authority.agent_label);
+            self.state = authority.state;
+        }
+        self.agent_metadata = snapshot
+            .reports
+            .into_iter()
+            .map(|m| {
+                if let Some(agent) = Self::metadata_report_agent(
+                    &m.source,
+                    m.agent_label.as_deref(),
+                    m.applies_to_source.as_deref(),
+                ) {
+                    self.metadata_report_agents.insert(m.source.clone(), agent);
+                }
+                (
+                    m.source.clone(),
+                    AgentMetadata {
+                        source: m.source,
+                        agent_label: m.agent_label,
+                        applies_to_source: m.applies_to_source,
+                        title: m.title,
+                        display_agent: m.display_agent,
+                        state_labels: m.state_labels,
+                        reported_at: instant(m.reported_age),
+                        title_reported_at: m.title_age.map(instant),
+                        display_agent_reported_at: m.display_age.map(instant),
+                        state_label_reported_at: m
+                            .state_label_ages
+                            .into_iter()
+                            .map(|(k, a)| (k, instant(a)))
+                            .collect(),
+                        ttl: m.ttl,
+                        expiry_event_pending: false,
+                    },
+                )
+            })
+            .collect();
+        let _ = self.expire_agent_metadata_at(now, now);
+    }
     pub(crate) fn metadata_report_sequence_is_fresh(&self, source: &str, seq: Option<u64>) -> bool {
         crate::metadata_tokens::sequence_is_fresh(&self.metadata_report_sequences, source, seq)
     }
@@ -527,6 +745,76 @@ mod tests {
 
     fn test_terminal() -> TerminalState {
         TerminalState::new(TerminalId::alloc(), "/tmp".into())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn transfer_metadata_without_acquisition_fields_remains_readable() {
+        let mut value = serde_json::to_value(test_terminal().capture_transfer_metadata()).unwrap();
+        let object = value.as_object_mut().unwrap();
+        for field in [
+            "suppressed_hook_reports",
+            "stale_hook_sessions",
+            "recent_process_exit",
+        ] {
+            object.remove(field);
+        }
+        let snapshot = serde_json::from_value(value).unwrap();
+        let mut restored = test_terminal();
+        restored.restore_transfer_metadata(snapshot);
+        assert!(restored.suppressed_full_lifecycle_hook_reports.is_empty());
+        assert!(restored.stale_full_lifecycle_hook_sessions.is_empty());
+        assert!(restored.recent_agent_process_exit.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn transfer_preserves_custom_hook_authority_sequences_and_metadata_expiry() {
+        let mut source = test_terminal();
+        let _ = source.set_agent_metadata(AgentMetadataReport {
+            source: "test".into(),
+            agent_label: None,
+            applies_to_source: None,
+            title: Some("transfer task".into()),
+            display_agent: None,
+            state_labels: HashMap::new(),
+            clear_title: false,
+            clear_display_agent: false,
+            clear_state_labels: false,
+            ttl: Some(Duration::from_secs(60)),
+            seq: Some(7),
+        });
+        source.hook_authority = Some(super::super::HookAuthority {
+            source: "custom:test".into(),
+            agent_label: "custom-agent".into(),
+            state: AgentState::Working,
+            message: Some("running".into()),
+            reported_at: Instant::now(),
+            session_ref: None,
+        });
+        source.hook_report_sequences.insert("custom:test".into(), 9);
+        let bytes =
+            serde_json::to_vec(&source.capture_transfer_metadata()).expect("serialize metadata");
+        let snapshot = serde_json::from_slice(&bytes).expect("deserialize metadata");
+        let mut target = test_terminal();
+        target.restore_transfer_metadata(snapshot);
+        assert_eq!(
+            target.effective_presentation().title.as_deref(),
+            Some("transfer task")
+        );
+        assert_eq!(
+            target.hook_authority.as_ref().map(|hook| hook.state),
+            Some(AgentState::Working)
+        );
+        assert_eq!(target.hook_report_sequences.get("custom:test"), Some(&9));
+        assert!(!target.metadata_report_sequence_is_fresh("test", Some(7)));
+        let mut expired = source.capture_transfer_metadata();
+        expired.captured_at -= Duration::from_secs(120);
+        target.restore_transfer_metadata(expired);
+        assert!(
+            target.effective_presentation().title.is_none(),
+            "transfer must not renew display metadata TTL"
+        );
     }
 
     #[test]

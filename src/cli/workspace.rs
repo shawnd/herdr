@@ -16,6 +16,7 @@ pub(super) fn run_workspace_command(args: &[String]) -> std::io::Result<i32> {
         "get" => workspace_get(&args[1..]),
         "focus" => workspace_focus(&args[1..]),
         "rename" => workspace_rename(&args[1..]),
+        "transfer" => workspace_transfer(&args[1..]),
         "report-metadata" => workspace_report_metadata(&args[1..]),
         "close" => workspace_close(&args[1..]),
         "help" | "--help" | "-h" => {
@@ -225,6 +226,25 @@ fn workspace_report_metadata(args: &[String]) -> std::io::Result<i32> {
     ))
 }
 
+fn workspace_transfer(args: &[String]) -> std::io::Result<i32> {
+    let [workspace_id, flag, session] = args else {
+        eprintln!("usage: herdr workspace transfer <workspace_id> --to-session <name>");
+        return Ok(2);
+    };
+    if flag != "--to-session" {
+        eprintln!("expected --to-session <name>");
+        return Ok(2);
+    }
+    if let Err(err) = crate::session::parse_target_name(session) {
+        eprintln!("{err}");
+        return Ok(2);
+    }
+    super::runtime::workspace_transfer(crate::api::schema::WorkspaceTransferParams {
+        workspace_id: super::normalize_workspace_id(workspace_id),
+        session: session.clone(),
+    })
+}
+
 fn workspace_close(args: &[String]) -> std::io::Result<i32> {
     let (raw_workspace_id, close_group) = match args {
         [workspace_id] => (workspace_id, false),
@@ -248,6 +268,7 @@ fn print_workspace_help() {
     eprintln!("  herdr workspace get <workspace_id>");
     eprintln!("  herdr workspace focus <workspace_id>");
     eprintln!("  herdr workspace rename <workspace_id> <label>");
+    eprintln!("  herdr workspace transfer <workspace_id> --to-session <name>");
     eprintln!("  herdr workspace report-metadata <workspace_id> --source ID [--token NAME=VALUE] [--clear-token NAME] [--seq N] [--ttl-ms N]");
     eprintln!("  herdr workspace close <workspace_id> [--group]");
 }

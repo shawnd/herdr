@@ -38,17 +38,20 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "product_announcement.dismiss",
     "release_notes.dismiss",
     "server.reload_config",
+    "session.list",
     "tab.close",
     "tab.create",
     "tab.focus",
     "tab.move",
     "tab.rename",
+    "tab.transfer",
     "workspace.close",
     "workspace.create",
     "workspace.focus",
     "workspace.move",
     "workspace.move_block",
     "workspace.rename",
+    "workspace.transfer",
     "worktree.create",
     "worktree.list",
     "worktree.open",
@@ -296,6 +299,18 @@ mod tests {
         assert_eq!(
             actual.remove("pane.link.resolve").as_deref(),
             Some("f5e4a3e01453ae7b188f127ce951c12c20e0bebcc17cc364eeb6d1a01fd5bf81")
+        );
+        assert_eq!(
+            actual.remove("session.list").as_deref(),
+            Some("a7b179d3558d3c545282b547a029d90027fc57a6b622e3a40a80c0adeaf056e1")
+        );
+        assert_eq!(
+            actual.remove("tab.transfer").as_deref(),
+            Some("57a09a7623a50fac6ce41c01a61ed9abde3390c70f46e36a5254426289d7326d")
+        );
+        assert_eq!(
+            actual.remove("workspace.transfer").as_deref(),
+            Some("a85128fd493910085d660d65e356ce1848bd9c92cba866623e659068cf3c2a17")
         );
 
         assert_eq!(

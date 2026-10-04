@@ -366,6 +366,7 @@ impl ClientShellState {
             | crate::api::schema::Method::PaneFocusDirection(_) => true,
             crate::api::schema::Method::WorkspaceCreate(params) => params.focus,
             crate::api::schema::Method::TabCreate(params) => params.focus,
+            crate::api::schema::Method::TabTransfer(params) => params.focus,
             crate::api::schema::Method::PaneSplit(params) => params.focus,
             _ => false,
         };
@@ -517,6 +518,9 @@ impl ClientShellState {
         {
             return (false, Vec::new());
         }
+        if !self.transfer_pending_is_current(&pending.kind) {
+            return (false, Vec::new());
+        }
         if let PendingEndpointKind::PaneLinkResolve { target } = pending.kind {
             return self.complete_link_hover(target, result);
         }
@@ -576,6 +580,10 @@ impl ClientShellState {
                     self.navigation_history
                         .fail(&self.active_endpoint_id, serial);
                 }
+            }
+            kind @ (PendingEndpointKind::TransferSessions { .. }
+            | PendingEndpointKind::Transfer { .. }) => {
+                return (self.complete_transfer(kind, result), Vec::new());
             }
             PendingEndpointKind::Generic => {}
             PendingEndpointKind::PaneLinkResolve { .. } => unreachable!("handled above"),

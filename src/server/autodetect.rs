@@ -223,7 +223,25 @@ pub fn spawn_server_daemon() -> io::Result<u32> {
 }
 
 fn build_server_daemon_command(exe: PathBuf) -> Command {
+    build_server_daemon_command_for_session(exe, None)
+}
+
+/// Named-session startup shares normal daemon context/stdio handling while
+/// deliberately ignoring caller-owned socket and nesting overrides.
+#[cfg(unix)]
+pub(crate) fn named_server_daemon_command(session: &str) -> io::Result<Command> {
+    crate::session::validate_name(session).map_err(io::Error::other)?;
+    Ok(build_server_daemon_command_for_session(
+        std::env::current_exe()?,
+        Some(session),
+    ))
+}
+
+fn build_server_daemon_command_for_session(exe: PathBuf, session: Option<&str>) -> Command {
     let mut command = Command::new(&exe);
+    if let Some(session) = session {
+        command.arg("--session").arg(session);
+    }
     command
         .arg("server")
         // Redirect stdio to /dev/null
@@ -241,10 +259,15 @@ fn build_server_daemon_command(exe: PathBuf) -> Command {
         }
     }
 
-    if crate::session::explicit_session_requested() {
+    if session.is_some() || crate::session::explicit_session_requested() {
         command
             .env_remove(crate::api::SOCKET_PATH_ENV_VAR)
             .env_remove("HERDR_CLIENT_SOCKET_PATH");
+    }
+    if session.is_some() {
+        command
+            .env_remove("HERDR_ENV")
+            .env_remove(crate::session::SESSION_ENV_VAR);
     }
 
     command
@@ -474,6 +497,41 @@ mod tests {
         assert!(envs.iter().any(|(key, value)| {
             *key == OsStr::new(STARTUP_CWD_ENV_VAR) && value == &Some(expected.as_os_str())
         }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn named_destination_daemon_selects_session_and_clears_caller_overrides() {
+        let command = build_server_daemon_command_for_session(
+            PathBuf::from("/tmp/herdr-test"),
+            Some("saved"),
+        );
+        let args: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args, ["--session", "saved", "server"]);
+        let envs: Vec<_> = command.get_envs().collect();
+        for key in [
+            crate::api::SOCKET_PATH_ENV_VAR,
+            "HERDR_CLIENT_SOCKET_PATH",
+            "HERDR_ENV",
+            crate::session::SESSION_ENV_VAR,
+        ] {
+            assert!(envs
+                .iter()
+                .any(|(name, value)| *name == OsStr::new(key) && value.is_none()));
+        }
+        // Unmentioned variables inherit the source server's config-home and
+        // installation context; they are not rewritten to global defaults.
+        for key in [
+            "XDG_CONFIG_HOME",
+            "XDG_STATE_HOME",
+            "XDG_RUNTIME_DIR",
+            crate::config::CONFIG_PATH_ENV_VAR,
+        ] {
+            assert!(!envs.iter().any(|(name, _)| *name == OsStr::new(key)));
+        }
     }
 
     #[cfg(target_os = "linux")]

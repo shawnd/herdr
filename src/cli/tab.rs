@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::api::schema::{TabCreateParams, TabListParams, TabRenameParams};
+use crate::api::schema::{TabCreateParams, TabListParams, TabRenameParams, TabTransferParams};
 
 pub(super) fn run_tab_command(args: &[String]) -> std::io::Result<i32> {
     let Some(subcommand) = args.first().map(|arg| arg.as_str()) else {
@@ -14,6 +14,7 @@ pub(super) fn run_tab_command(args: &[String]) -> std::io::Result<i32> {
         "get" => tab_get(&args[1..]),
         "focus" => tab_focus(&args[1..]),
         "rename" => tab_rename(&args[1..]),
+        "transfer" => tab_transfer(&args[1..]),
         "close" => tab_close(&args[1..]),
         "help" | "--help" | "-h" => {
             print_tab_help();
@@ -161,6 +162,33 @@ fn tab_rename(args: &[String]) -> std::io::Result<i32> {
     })
 }
 
+fn tab_transfer(args: &[String]) -> std::io::Result<i32> {
+    let [tab_id, workspace_flag, workspace_id, rest @ ..] = args else {
+        eprintln!(
+            "usage: herdr tab transfer <tab_id> --workspace <workspace_id> [--focus|--no-focus]"
+        );
+        return Ok(2);
+    };
+    let focus = match rest {
+        [] => false,
+        [flag] if flag == "--focus" => true,
+        [flag] if flag == "--no-focus" => false,
+        _ => {
+            eprintln!("usage: herdr tab transfer <tab_id> --workspace <workspace_id> [--focus|--no-focus]");
+            return Ok(2);
+        }
+    };
+    if workspace_flag != "--workspace" {
+        eprintln!("expected --workspace <workspace_id>");
+        return Ok(2);
+    }
+    super::runtime::tab_transfer(TabTransferParams {
+        tab_id: super::normalize_tab_id(tab_id),
+        workspace_id: super::normalize_workspace_id(workspace_id),
+        focus,
+    })
+}
+
 fn tab_close(args: &[String]) -> std::io::Result<i32> {
     let Some(raw_tab_id) = args.first() else {
         eprintln!("usage: herdr tab close <tab_id>");
@@ -183,5 +211,6 @@ fn print_tab_help() {
     eprintln!("  herdr tab get <tab_id>");
     eprintln!("  herdr tab focus <tab_id>");
     eprintln!("  herdr tab rename <tab_id> <label>");
+    eprintln!("  herdr tab transfer <tab_id> --workspace <workspace_id> [--focus|--no-focus]");
     eprintln!("  herdr tab close <tab_id>");
 }

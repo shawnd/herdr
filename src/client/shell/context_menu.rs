@@ -5,7 +5,7 @@ impl ClientContextMenuOverlay {
         use ClientContextMenuAction as Action;
 
         let item = |label, action| ClientContextMenuItem { label, action };
-        match &self.target {
+        let mut items = match &self.target {
             ClientContextMenuTarget::Workspace { is_git: false, .. } => {
                 vec![item("Rename", Action::Rename), item("Close", Action::Close)]
             }
@@ -79,7 +79,17 @@ impl ClientContextMenuOverlay {
                 ]);
                 items
             }
+        };
+        match &self.target {
+            ClientContextMenuTarget::Workspace { .. } => {
+                items.push(item("Move to session...", Action::MoveToSession))
+            }
+            ClientContextMenuTarget::Tab { .. } => {
+                items.push(item("Move to space...", Action::MoveToSpace))
+            }
+            _ => {}
         }
+        items
     }
 }
 
@@ -229,6 +239,9 @@ impl ClientShellState {
         use crate::input::KeybindAction;
 
         match action {
+            ClientContextMenuAction::MoveToSession => {
+                self.begin_transfer(ClientTransferSource::Workspace { workspace_id }, outcome);
+            }
             ClientContextMenuAction::Rename => {
                 let label = self
                     .snapshot
@@ -288,6 +301,16 @@ impl ClientShellState {
     ) {
         use crate::api::schema::{Method, TabTarget};
 
+        if action == ClientContextMenuAction::MoveToSpace {
+            self.begin_transfer(
+                ClientTransferSource::Tab {
+                    tab_id,
+                    workspace_id,
+                },
+                outcome,
+            );
+            return;
+        }
         self.push_endpoint_method(
             Method::TabFocus(TabTarget {
                 tab_id: tab_id.clone(),

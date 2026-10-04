@@ -221,6 +221,12 @@ fn workspace_command() -> Command {
                 .arg(option("ttl-ms", "N")),
         )
         .subcommand(id_command("close", "workspace_id", "Close a workspace"))
+        .subcommand(
+            Command::new("transfer")
+                .about("Move a workspace to another local session, starting it if stopped")
+                .arg(required("workspace_id", "WORKSPACE_ID"))
+                .arg(option("to-session", "NAME").required(true)),
+        )
 }
 
 fn worktree_command() -> Command {
@@ -294,6 +300,14 @@ fn tab_command() -> Command {
                 .arg(required("label", "LABEL").num_args(1..)),
         )
         .subcommand(id_command("close", "tab_id", "Close a tab"))
+        .subcommand(
+            Command::new("transfer")
+                .about("Move a complete tab to another workspace")
+                .arg(required("tab_id", "TAB_ID"))
+                .arg(option("workspace", "WORKSPACE_ID").required(true))
+                .arg(flag("focus"))
+                .arg(flag("no-focus")),
+        )
 }
 
 fn notification_command() -> Command {

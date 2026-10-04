@@ -328,7 +328,7 @@ fn restrict_socket_permissions(path: &Path) -> io::Result<()> {
 }
 
 #[cfg(unix)]
-fn accept_with_timeout(
+pub(crate) fn accept_with_timeout(
     listener: &UnixListener,
     timeout: Duration,
 ) -> io::Result<(UnixStream, std::os::unix::net::SocketAddr)> {
@@ -352,7 +352,7 @@ fn accept_with_timeout(
 }
 
 #[cfg(unix)]
-fn read_line_unbuffered(stream: &mut UnixStream) -> io::Result<String> {
+pub(crate) fn read_line_unbuffered(stream: &mut UnixStream) -> io::Result<String> {
     let mut bytes = Vec::new();
     let mut byte = [0u8; 1];
     loop {
@@ -378,7 +378,7 @@ fn read_line_unbuffered(stream: &mut UnixStream) -> io::Result<String> {
 }
 
 #[cfg(unix)]
-fn send_fds(stream: &UnixStream, fds: &[RawFd]) -> io::Result<()> {
+pub(crate) fn send_fds(stream: &UnixStream, fds: &[RawFd]) -> io::Result<()> {
     for batch in fds.chunks(FDS_PER_MESSAGE) {
         send_fd_batch(stream, batch)?;
     }
@@ -427,7 +427,7 @@ fn close_raw_fds(fds: &[RawFd]) {
 }
 
 #[cfg(unix)]
-fn recv_fds(stream: &UnixStream, expected: usize) -> io::Result<Vec<RawFd>> {
+pub(crate) fn recv_fds(stream: &UnixStream, expected: usize) -> io::Result<Vec<RawFd>> {
     let mut out: Vec<RawFd> = Vec::with_capacity(expected);
     while out.len() < expected {
         let wanted = (expected - out.len()).min(FDS_PER_MESSAGE);
@@ -516,6 +516,16 @@ fn recv_fd_batch(stream: &UnixStream, wanted: usize) -> io::Result<Vec<RawFd>> {
     }
     if out.is_empty() {
         return Err(io::Error::other("handoff fd message missing SCM_RIGHTS"));
+    }
+    // SCM_RIGHTS duplicates do not inherit FD_CLOEXEC. Imported masters must
+    // not leak into unrelated panes launched by the receiving live server.
+    for fd in &out {
+        let flags = unsafe { libc::fcntl(*fd, libc::F_GETFD) };
+        if flags < 0 || unsafe { libc::fcntl(*fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
+            let error = io::Error::last_os_error();
+            close_raw_fds(&out);
+            return Err(error);
+        }
     }
     Ok(out)
 }

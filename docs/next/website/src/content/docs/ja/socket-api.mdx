@@ -95,10 +95,10 @@ herdr pane read w1:p2 --source recent --lines 50
 | サーバー | `ping`、`server.stop`、`server.reload_config`、`server.agent_manifests`、`server.reload_agent_manifests` |
 | 通知 | `notification.show` |
 | クライアント | `client.window_title.set`、`client.window_title.clear` |
-| セッション | `session.snapshot` |
-| ワークスペース | `workspace.create`、`workspace.list`、`workspace.get`、`workspace.focus`、`workspace.rename`、`workspace.move`、`workspace.move_block`、`workspace.report_metadata`、`workspace.close` |
+| セッション | `session.snapshot`、`session.list` |
+| ワークスペース | `workspace.create`、`workspace.list`、`workspace.get`、`workspace.focus`、`workspace.rename`、`workspace.move`、`workspace.move_block`、`workspace.transfer`、`workspace.report_metadata`、`workspace.close` |
 | Worktree | `worktree.list`、`worktree.create`、`worktree.open`、`worktree.remove` |
-| タブ | `tab.create`、`tab.list`、`tab.get`、`tab.focus`、`tab.rename`、`tab.move`、`tab.close` |
+| タブ | `tab.create`、`tab.list`、`tab.get`、`tab.focus`、`tab.rename`、`tab.move`、`tab.transfer`、`tab.close` |
 | ペイン | `pane.split`、`pane.swap`、`pane.move`、`pane.zoom`、`pane.layout`、`pane.process_info`、`pane.neighbor`、`pane.edges`、`pane.focus_direction`、`pane.resize`、`pane.list`、`pane.current`、`pane.get`、`pane.rename`、`pane.send_text`、`pane.send_keys`、`pane.send_input`、`pane.read`、`pane.report_agent`、`pane.report_agent_session`、`pane.report_metadata`、`pane.clear_agent_authority`、`pane.release_agent`、`pane.close`、`pane.wait_for_output` |
 | ポップアップ | `popup.close` |
 | レイアウト | `layout.export`、`layout.apply`、`layout.set_split_ratio` |
@@ -110,6 +110,12 @@ herdr pane read w1:p2 --source recent --lines 50
 `agent.wait` はサーバー所有でイベント駆動です。解決したペイン占有者に固定されるため、置換されたエージェントが待機を満たすことはありません。`agent.prompt` は `until` と `timeout_ms` を持つ省略可能な `wait` オブジェクトを受け付けます。これにより、プロンプト送信と待機開始を 1 つのリクエストで行い、別々の呼び出し間の競合を避けられます。解決したエージェントがすでに `blocked` の場合、`agent.prompt` は入力を送信せず、待機も開始せずに `agent_blocked` を返します。
 
 `workspace.move_block` は、順序付きの `workspace_ids` を `before_workspace_id` の前へアトミックに移動します。アンカーを省略するとブロックを末尾へ移動します。id は一意である必要があり、アンカーをブロックに含めることはできません。レスポンスにはサーバーが確定した順序付きワークスペース一覧が含まれます。
+
+`tab.transfer` は `tab_id`、移動先の `workspace_id`、任意の `focus`（既定は `false`）を受け取ります。分割レイアウト、フォーカス、ズーム、実行中の端末を含むタブ全体を移動し、新しい公開タブ id を含む `tab_info` を返します。移動先ではタブとペインの id が新しく割り当てられますが、端末が継承したペイン呼び出し元 id は同じセッション内で引き続き解決されます。最後のタブを移動すると、空になった移動元ワークスペースだけが削除されます。`tab.move` は同じワークスペース内の並べ替え専用です。
+
+`session.list` はサーバー上のローカルセッションの `name`、`current`、`running` を返します。`workspace.transfer` は `workspace_id` と移動先の `session` を受け取り、右クリックの **Move to session...** ピッカーで使用されます。停止中の移動先はバックグラウンドで起動し、保存済みワークスペースを復元してから受信します。同じマシン上の互換性のある Unix サーバー間で、プロセスを維持して移動します。CLI は `herdr tab transfer <tab_id> --workspace <workspace_id> [--focus]` と `herdr workspace transfer <workspace_id> --to-session <name>` です。
+
+成功時は移動先の `workspace_id` と `session` を含む `workspace_transferred` を返します。既存プロセスは継承した移動元ソケットを使うため、ペインフックと呼び出し元リクエストを転送する移動元サーバーを動かし続けてください。新しい移動先 id を使うコマンドは、移動先セッションを明示して実行します。
 
 `session.snapshot` は、独自のローカルランタイムキャッシュを持つクライアント向けに、一度限りのブートストラップスナップショットを返します。レスポンスには、バージョン/プロトコルメタデータ、フォーカス中のワークスペース/タブ/ペイン id、ワークスペース、タブ、ペイン、タブレイアウト、エージェントの各レコードが含まれます。これは購読ではありません。キャッシュの初期化と復旧では、先に購読を開始し、後述のイベント購読セクションの手順でサーバーから現在の状態を読み取り、キャッシュを照合・更新します。イベントはキャッシュの無効化を知らせるものであり、スナップショットに無条件で再適用できるものではありません。再接続後やキャッシュが古い可能性がある場合は、`session.snapshot` を再度呼び出します。ワークスペースレコードには、関連付けられた worktree の出自情報も含まれます。リポジトリ全体の worktree 検出には引き続き `worktree.list` を使います。
 

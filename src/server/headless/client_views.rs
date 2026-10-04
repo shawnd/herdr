@@ -234,8 +234,10 @@ impl HeadlessServer {
                 | Method::PaneSplit(_)
                 | Method::TabClose(_)
                 | Method::TabCreate(_)
+                | Method::TabTransfer(_)
                 | Method::WorkspaceClose(_)
                 | Method::WorkspaceCreate(_)
+                | Method::WorkspaceTransfer(_)
                 | Method::WorktreeCreate(_)
                 | Method::WorktreeOpen(_)
                 | Method::WorktreeRemove(_)
@@ -270,11 +272,13 @@ impl HeadlessServer {
                 | Method::TabCreate(_)
                 | Method::TabFocus(_)
                 | Method::TabMove(_)
+                | Method::TabTransfer(_)
                 | Method::TabRename(_)
                 | Method::WorkspaceClose(_)
                 | Method::WorkspaceCreate(_)
                 | Method::WorkspaceFocus(_)
                 | Method::WorkspaceMove(_)
+                | Method::WorkspaceTransfer(_)
                 | Method::WorkspaceMoveBlock(_)
                 | Method::WorkspaceRename(_)
                 | Method::WorktreeCreate(_)
@@ -303,6 +307,8 @@ impl HeadlessServer {
                 | Method::TabCreate(_)
                 | Method::TabFocus(_)
                 | Method::WorkspaceClose(_)
+                | Method::TabTransfer(_)
+                | Method::WorkspaceTransfer(_)
                 | Method::WorkspaceCreate(_)
                 | Method::WorkspaceFocus(_)
                 | Method::WorktreeCreate(_)
@@ -858,11 +864,22 @@ impl HeadlessServer {
             &msg.request.method,
             api::schema::Method::PaneMove(params) if params.focus
         );
-        let response_proxy = (agent_focus_target.is_some() || inspect_pane_move).then(|| {
-            let (proxy_tx, proxy_rx) = std::sync::mpsc::channel();
-            let original = std::mem::replace(&mut msg.respond_to, proxy_tx);
-            (original, proxy_rx)
-        });
+        let inspect_tab_transfer = match &msg.request.method {
+            api::schema::Method::TabTransfer(params) if params.focus => self
+                .app
+                .parse_tab_id(&params.tab_id)
+                .zip(self.app.parse_workspace_id(&params.workspace_id))
+                .is_some_and(|((source, _), destination)| source != destination),
+            _ => false,
+        };
+        let response_proxy = (agent_focus_target.is_some()
+            || inspect_pane_move
+            || inspect_tab_transfer)
+            .then(|| {
+                let (proxy_tx, proxy_rx) = std::sync::mpsc::channel();
+                let original = std::mem::replace(&mut msg.respond_to, proxy_tx);
+                (original, proxy_rx)
+            });
         let reconcile = Self::shell_locations_may_need_reconcile(&msg.request.method);
         let changed = self.handle_api_request_with_shutdown_check_inner(msg, false, false);
         let proxied_result = forward_proxied_api_response(response_proxy);
@@ -872,6 +889,11 @@ impl HeadlessServer {
             && matches!(
                 &proxied_result,
                 Some(api::schema::ResponseResult::PaneMove { move_result }) if move_result.changed
+            );
+        let tab_transfer_focus_succeeded = inspect_tab_transfer
+            && matches!(
+                &proxied_result,
+                Some(api::schema::ResponseResult::TabInfo { .. })
             );
         let successful_agent_focus_target = proxied_request_succeeded
             .then(|| {
@@ -892,6 +914,7 @@ impl HeadlessServer {
         let public_focus_succeeded = explicit_focus_succeeded
             || (create_focus_requested && target_changed)
             || pane_move_focus_succeeded;
+        let public_focus_succeeded = public_focus_succeeded || tab_transfer_focus_succeeded;
         if public_focus_succeeded {
             self.focus_all_shell_clients_on_default_target();
         }

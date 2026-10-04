@@ -1234,6 +1234,32 @@ fn authority_mutation_requests_round_trip() {
 }
 
 #[test]
+fn transfer_methods_do_not_change_legacy_reordering_contracts() {
+    let transfer = serde_json::json!({
+        "id": "tab-transfer", "method": "tab.transfer",
+        "params": {"tab_id": "w1:t1", "workspace_id": "w2", "focus": true}
+    });
+    let request: Request = serde_json::from_value(transfer.clone()).unwrap();
+    assert!(
+        matches!(&request.method, Method::TabTransfer(params) if params.focus && params.workspace_id == "w2")
+    );
+    assert_eq!(serde_json::to_value(request).unwrap(), transfer);
+    let request: Request = serde_json::from_value(serde_json::json!({
+        "id": "workspace-transfer", "method": "workspace.transfer",
+        "params": {"workspace_id": "w1", "session": "other"}
+    }))
+    .unwrap();
+    assert!(
+        matches!(request.method, Method::WorkspaceTransfer(params) if params.session == "other")
+    );
+    let legacy: Request = serde_json::from_value(serde_json::json!({
+        "id": "reorder", "method": "tab.move", "params": {"tab_id": "w1:t1", "insert_index": 1}
+    }))
+    .unwrap();
+    assert!(matches!(legacy.method, Method::TabMove(params) if params.insert_index == 1));
+}
+
+#[test]
 fn create_response_round_trips_with_root_pane() {
     let response = SuccessResponse {
         id: "req_2".into(),

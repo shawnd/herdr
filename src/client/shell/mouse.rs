@@ -1392,6 +1392,9 @@ impl ClientShellState {
                 return;
             }
         }
+        if self.route_transfer_mouse(mouse, outcome) {
+            return;
+        }
         if matches!(self.overlay, Some(ClientShellOverlay::GlobalMenu(_))) {
             let row_hit = self
                 .hits

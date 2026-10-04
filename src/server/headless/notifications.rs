@@ -302,6 +302,13 @@ impl HeadlessServer {
         if self.host_shutdown_requested.load(Ordering::Acquire) {
             return false;
         }
+        #[cfg(unix)]
+        {
+            let Some(event) = self.workspace_transfers.filter_event(ev) else {
+                return false;
+            };
+            ev = event;
+        }
         let focus_response = match &mut ev {
             AppEvent::WorktreeAddFinished(result) => result
                 .api_request

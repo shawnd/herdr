@@ -5,6 +5,14 @@ use super::panes::{PaneInfo, PaneLayoutSnapshot};
 use super::tabs::TabInfo;
 use super::workspaces::WorkspaceInfo;
 
+/// Local session destinations, resolved by the server rather than the client.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct SessionDestinationInfo {
+    pub name: String,
+    pub current: bool,
+    pub running: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SessionSnapshot {
     pub version: String,

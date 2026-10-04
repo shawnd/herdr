@@ -2,8 +2,9 @@ use crate::api::schema::{
     EmptyParams, Method, PaneFocusDirectionParams, PaneInputSetParams, PaneMoveParams,
     PaneRenameParams, PaneResizeParams, PaneSplitParams, PaneSwapParams, PaneTarget,
     PaneZoomParams, Request, TabCreateParams, TabListParams, TabRenameParams, TabTarget,
-    WorkspaceCloseParams, WorkspaceCreateParams, WorkspaceRenameParams, WorkspaceTarget,
-    WorktreeCreateParams, WorktreeListParams, WorktreeOpenParams, WorktreeRemoveParams,
+    TabTransferParams, WorkspaceCloseParams, WorkspaceCreateParams, WorkspaceRenameParams,
+    WorkspaceTarget, WorkspaceTransferParams, WorktreeCreateParams, WorktreeListParams,
+    WorktreeOpenParams, WorktreeRemoveParams,
 };
 
 fn print_method_response(id: &'static str, method: Method) -> std::io::Result<i32> {
@@ -46,6 +47,10 @@ pub(super) fn workspace_close(params: WorkspaceCloseParams) -> std::io::Result<i
     print_method_response("cli:workspace:close", Method::WorkspaceClose(params))
 }
 
+pub(super) fn workspace_transfer(params: WorkspaceTransferParams) -> std::io::Result<i32> {
+    print_method_response("cli:workspace:transfer", Method::WorkspaceTransfer(params))
+}
+
 pub(super) fn tab_list(params: TabListParams) -> std::io::Result<i32> {
     print_method_response("cli:tab:list", Method::TabList(params))
 }
@@ -68,6 +73,10 @@ pub(super) fn tab_rename(params: TabRenameParams) -> std::io::Result<i32> {
 
 pub(super) fn tab_close(tab_id: String) -> std::io::Result<i32> {
     print_method_response("cli:tab:close", Method::TabClose(TabTarget { tab_id }))
+}
+
+pub(super) fn tab_transfer(params: TabTransferParams) -> std::io::Result<i32> {
+    print_method_response("cli:tab:transfer", Method::TabTransfer(params))
 }
 
 pub(super) fn worktree_list(params: WorktreeListParams) -> std::io::Result<i32> {

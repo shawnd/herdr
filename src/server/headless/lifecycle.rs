@@ -257,6 +257,8 @@ impl HeadlessServer {
         let client_socket_identity = socket_file_identity(&client_path)?;
         listener.set_nonblocking(ListenerNonblockingMode::Accept)?;
 
+        self.workspace_transfers
+            .set_stop_control(api_server.workspace_transfer_stop_control());
         self.api_server = Some(api_server);
         self.client_listener = listener;
         self.client_socket_path = client_path;

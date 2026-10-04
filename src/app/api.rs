@@ -27,6 +27,36 @@ enum RuntimeExitAction {
 }
 
 impl App {
+    #[cfg(unix)]
+    pub(crate) fn emit_workspace_transfer_out(&mut self, workspace: &crate::workspace::Workspace) {
+        use crate::api::schema::{EventData, EventEnvelope, EventKind};
+        for tab in &workspace.tabs {
+            self.emit_event(EventEnvelope {
+                event: EventKind::TabClosed,
+                data: EventData::TabClosed {
+                    tab_id: crate::workspace::public_tab_id_for_number(&workspace.id, tab.number),
+                    workspace_id: workspace.id.clone(),
+                },
+            });
+        }
+        self.emit_event(EventEnvelope {
+            event: EventKind::WorkspaceClosed,
+            data: EventData::WorkspaceClosed {
+                workspace_id: workspace.id.clone(),
+                workspace: None,
+            },
+        });
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn emit_workspace_transfer_in(&mut self, workspace_index: usize) {
+        self.emit_workspace_open_events(workspace_index);
+        let tab_count = self.state.workspaces[workspace_index].tabs.len();
+        for tab_index in 1..tab_count {
+            self.emit_tab_created_events(workspace_index, tab_index);
+        }
+    }
+
     pub(crate) fn handle_internal_event_with_render_impact(&mut self, ev: AppEvent) -> bool {
         match ev {
             AppEvent::GitStatusRefreshed {
@@ -1031,6 +1061,42 @@ impl App {
                 );
             }
             Method::SessionSnapshot(_) => return self.handle_session_snapshot(request.id),
+            Method::SessionList(_) => {
+                return match crate::session::list_sessions() {
+                    Ok(sessions) => {
+                        let current_socket = crate::session::active_api_socket_path();
+                        let current_data_dir = crate::session::data_dir();
+                        let sessions = sessions
+                            .into_iter()
+                            .map(|session| crate::api::schema::SessionDestinationInfo {
+                                current: std::path::Path::new(&session.socket_path)
+                                    == current_socket
+                                    || std::path::Path::new(&session.session_dir)
+                                        == current_data_dir,
+                                name: session.name,
+                                running: session.running,
+                            })
+                            .collect();
+                        responses::encode_success(
+                            request.id,
+                            ResponseResult::SessionList { sessions },
+                        )
+                    }
+                    Err(err) => {
+                        responses::encode_error(request.id, "session_list_failed", err.to_string())
+                    }
+                };
+            }
+            Method::WorkspaceTransfer(_)
+            | Method::WorkspaceTransferImport(_)
+            | Method::WorkspaceTransferStatus(_)
+            | Method::WorkspaceTransferCancel(_) => {
+                return responses::encode_error(
+                    request.id,
+                    "unsupported",
+                    "workspace transfer requires the server runtime",
+                );
+            }
             Method::WorkspaceList(_) => return self.handle_workspace_list(request.id),
             Method::WorkspaceGet(target) => return self.handle_workspace_get(request.id, target),
             Method::WorkspaceCreate(params) => {
@@ -1083,6 +1149,7 @@ impl App {
             Method::TabFocus(target) => return self.handle_tab_focus(request.id, target),
             Method::TabRename(params) => return self.handle_tab_rename(request.id, params),
             Method::TabMove(params) => return self.handle_tab_move(request.id, params),
+            Method::TabTransfer(params) => return self.handle_tab_transfer(request.id, params),
             Method::TabClose(target) => return self.handle_tab_close(request.id, target),
             Method::AgentList(_) => return self.handle_agent_list(request.id),
             Method::AgentGet(target) => return self.handle_agent_get(request.id, target),

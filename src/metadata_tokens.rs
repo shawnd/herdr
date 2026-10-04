@@ -12,6 +12,12 @@ pub(crate) struct MetadataTokens {
     entries: HashMap<String, MetadataToken>,
 }
 
+/// Transfer deadlines use wall time solely at the cross-process boundary.
+/// Local token expiry continues to use monotonic time.
+#[cfg(unix)]
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct TransferTokens(Vec<(String, String, Option<std::time::SystemTime>)>);
+
 pub(crate) const MAX_SEQUENCE_SOURCES: usize = 32;
 
 pub(crate) fn sequence_is_fresh(
@@ -41,6 +47,42 @@ pub(crate) fn accept_sequence(
 }
 
 impl MetadataTokens {
+    #[cfg(unix)]
+    pub(crate) fn capture_transfer(&self) -> TransferTokens {
+        let now = Instant::now();
+        let wall = std::time::SystemTime::now();
+        TransferTokens(
+            self.entries
+                .iter()
+                .filter_map(|(key, token)| {
+                    let expiry = match token.expires_at {
+                        Some(deadline) => {
+                            Some(wall.checked_add(deadline.checked_duration_since(now)?)?)
+                        }
+                        None => None,
+                    };
+                    Some((key.clone(), token.value.clone(), expiry))
+                })
+                .collect(),
+        )
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn restore_transfer(&mut self, tokens: TransferTokens) {
+        let now = Instant::now();
+        let wall = std::time::SystemTime::now();
+        self.entries = tokens
+            .0
+            .into_iter()
+            .filter_map(|(key, value, expiry)| {
+                let expires_at = match expiry {
+                    Some(deadline) => Some(now.checked_add(deadline.duration_since(wall).ok()?)?),
+                    None => None,
+                };
+                Some((key, MetadataToken { value, expires_at }))
+            })
+            .collect();
+    }
     pub(crate) fn patch(
         &mut self,
         patch: HashMap<String, Option<String>>,
@@ -106,6 +148,35 @@ impl MetadataTokens {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn transfer_does_not_turn_expiring_tokens_into_permanent_tokens() {
+        let mut tokens = MetadataTokens::default();
+        tokens.restore_transfer(TransferTokens(vec![
+            (
+                "expired".into(),
+                "old".into(),
+                Some(std::time::SystemTime::now() - Duration::from_secs(1)),
+            ),
+            ("persistent".into(), "kept".into(), None),
+            (
+                "temporary".into(),
+                "kept".into(),
+                Some(std::time::SystemTime::now() + Duration::from_secs(60)),
+            ),
+        ]));
+        assert!(!tokens.values().contains_key("expired"));
+        assert_eq!(tokens.values()["persistent"], "kept");
+        let deadline = tokens
+            .next_expiry()
+            .expect("temporary token keeps its deadline");
+        assert!(tokens.expire_at(deadline));
+        assert_eq!(
+            tokens.values(),
+            HashMap::from([("persistent".into(), "kept".into())])
+        );
+    }
 
     fn patch(items: &[(&str, Option<&str>)]) -> HashMap<String, Option<String>> {
         items

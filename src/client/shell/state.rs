@@ -290,6 +290,7 @@ pub(super) enum ClientShellOverlayKind {
     WorktreeCreate,
     WorktreeOpen,
     WorktreeRemove,
+    Transfer,
     ContextMenu,
     GlobalMenu,
     Settings,
@@ -517,6 +518,8 @@ pub(super) struct ClientWorktreeRemoveOverlay {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ClientContextMenuAction {
+    MoveToSpace,
+    MoveToSession,
     Rename,
     Close,
     NewWorktree,
@@ -586,6 +589,56 @@ pub(super) struct ClientConfirmCloseOverlay {
 }
 
 #[derive(Debug)]
+pub(super) enum ClientTransferSource {
+    Tab {
+        tab_id: String,
+        workspace_id: String,
+    },
+    Workspace {
+        workspace_id: String,
+    },
+}
+
+#[derive(Debug)]
+pub(super) struct ClientTransferDestination {
+    pub(super) id: String,
+    pub(super) label: String,
+    pub(super) detail: String,
+}
+
+#[derive(Debug)]
+pub(super) struct ClientTransferOverlay {
+    pub(super) picker_id: u64,
+    pub(super) endpoint_id: ClientEndpointId,
+    pub(super) boot_id: String,
+    pub(super) source: ClientTransferSource,
+    pub(super) entries: Vec<ClientTransferDestination>,
+    pub(super) query: TextEditor,
+    pub(super) search_focused: bool,
+    pub(super) selected: usize,
+    pub(super) loading: bool,
+    pub(super) submitting: bool,
+    pub(super) error: Option<String>,
+}
+
+impl ClientTransferOverlay {
+    pub(super) fn filtered_indices(&self) -> Vec<usize> {
+        let query = self.query.trim().to_lowercase();
+        self.entries
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| {
+                (query.is_empty()
+                    || format!("{} {}", entry.label, entry.detail)
+                        .to_lowercase()
+                        .contains(&query))
+                .then_some(index)
+            })
+            .collect()
+    }
+}
+
+#[derive(Debug)]
 pub(super) enum ClientShellOverlay {
     Onboarding,
     ProductAnnouncement(crate::app::state::ProductAnnouncementState),
@@ -597,6 +650,7 @@ pub(super) enum ClientShellOverlay {
     WorktreeCreate(ClientWorktreeCreateOverlay),
     WorktreeOpen(ClientWorktreeOpenOverlay),
     WorktreeRemove(ClientWorktreeRemoveOverlay),
+    Transfer(ClientTransferOverlay),
     ContextMenu(ClientContextMenuOverlay),
     GlobalMenu(ClientGlobalMenuOverlay),
     Settings(ClientSettingsOverlay),
@@ -615,6 +669,7 @@ impl ClientShellOverlay {
             Self::WorktreeCreate(_) => ClientShellOverlayKind::WorktreeCreate,
             Self::WorktreeOpen(_) => ClientShellOverlayKind::WorktreeOpen,
             Self::WorktreeRemove(_) => ClientShellOverlayKind::WorktreeRemove,
+            Self::Transfer(_) => ClientShellOverlayKind::Transfer,
             Self::ContextMenu(_) => ClientShellOverlayKind::ContextMenu,
             Self::GlobalMenu(_) => ClientShellOverlayKind::GlobalMenu,
             Self::Settings(_) => ClientShellOverlayKind::Settings,
@@ -626,6 +681,14 @@ impl ClientShellOverlay {
 pub(super) enum PendingEndpointKind {
     NavigationHistory {
         serial: u64,
+    },
+    TransferSessions {
+        picker_id: u64,
+        endpoint_id: ClientEndpointId,
+    },
+    Transfer {
+        picker_id: u64,
+        endpoint_id: ClientEndpointId,
     },
     Generic,
     ProductAnnouncementDismiss {

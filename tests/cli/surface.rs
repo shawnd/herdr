@@ -1,6 +1,73 @@
 use super::harness::*;
 
 #[test]
+fn transfer_commands_send_distinct_destination_methods() {
+    for (args, method, expected) in [
+        (
+            vec!["tab", "transfer", "w1:t1", "--workspace", "w2", "--focus"],
+            "tab.transfer",
+            serde_json::json!({"tab_id":"w1:t1", "workspace_id":"w2", "focus":true}),
+        ),
+        (
+            vec!["workspace", "transfer", "w1", "--to-session", "other"],
+            "workspace.transfer",
+            serde_json::json!({"workspace_id":"w1", "session":"other"}),
+        ),
+    ] {
+        let base = unique_test_dir();
+        fs::create_dir_all(&base).unwrap();
+        let socket_path = base.join("herdr.sock");
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, line) = accept_fake_cli_operation(&listener);
+            stream
+                .write_all(b"{\"id\":\"cli:request\",\"result\":{\"type\":\"ok\"}}\n")
+                .unwrap();
+            stream.flush().unwrap();
+            line
+        });
+        let run = run_cli(&socket_path, &args);
+        assert!(
+            run.status.success(),
+            "{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+        let request: serde_json::Value = serde_json::from_str(&server.join().unwrap()).unwrap();
+        assert_eq!(request["method"], method);
+        assert_eq!(request["params"], expected);
+        cleanup_test_base(&base);
+    }
+}
+
+#[test]
+fn transfer_commands_reject_missing_or_invalid_destinations_without_socket_access() {
+    let base = unique_test_dir();
+    let socket_path = base.join("missing.sock");
+    for args in [
+        vec!["tab", "transfer", "w1:t1"],
+        vec![
+            "tab",
+            "transfer",
+            "w1:t1",
+            "--workspace",
+            "w2",
+            "--unexpected",
+        ],
+        vec!["workspace", "transfer", "w1"],
+        vec!["workspace", "transfer", "w1", "--to-session", "../other"],
+    ] {
+        let run = run_cli(&socket_path, &args);
+        assert_eq!(
+            run.status.code(),
+            Some(2),
+            "{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+        assert!(!String::from_utf8_lossy(&run.stderr).contains("failed to connect"));
+    }
+}
+
+#[test]
 fn pane_run_sends_one_send_input_request_with_enter_key() {
     let base = unique_test_dir();
     fs::create_dir_all(&base).unwrap();

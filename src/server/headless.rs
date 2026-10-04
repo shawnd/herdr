@@ -81,6 +81,10 @@ mod notifications;
 mod render;
 mod retained_surface;
 mod surface_interest;
+#[cfg(unix)]
+mod workspace_transfer;
+#[cfg(unix)]
+mod workspace_transfer_projection;
 
 // Producers can refill even a bounded channel while it is being drained.
 // Yield to scheduled work and rendering between batches; select! below
@@ -237,6 +241,8 @@ pub struct HeadlessServer {
     shutting_down: bool,
     /// Flag set while exporting live PTYs to a replacement server.
     handoff_in_progress: bool,
+    #[cfg(unix)]
+    workspace_transfers: workspace_transfer::Coordinator,
     /// Imported panes get one app-safe resize nudge after the first client attaches.
     #[cfg(unix)]
     pending_handoff_repaint_nudge: bool,
@@ -331,6 +337,14 @@ impl HeadlessServer {
             server_config_diagnostic_summaries(config_diagnostics);
         #[cfg(not(unix))]
         let _ = api_tx;
+        #[cfg(unix)]
+        let workspace_transfers = {
+            let mut coordinator = workspace_transfer::Coordinator::default();
+            if let Some(server) = &api_server {
+                coordinator.set_stop_control(server.workspace_transfer_stop_control());
+            }
+            coordinator
+        };
         Ok(Self {
             app,
             #[cfg(unix)]
@@ -369,6 +383,8 @@ impl HeadlessServer {
             shutting_down: false,
             host_shutdown_requested: Arc::new(AtomicBool::new(false)),
             handoff_in_progress: false,
+            #[cfg(unix)]
+            workspace_transfers,
             #[cfg(unix)]
             pending_handoff_repaint_nudge: false,
             should_quit,
@@ -444,6 +460,12 @@ impl HeadlessServer {
                 needs_full_render = true;
                 needs_graphics_render = false;
                 crate::render_prof::event("full_render_cause.internal_events");
+            }
+            #[cfg(unix)]
+            if self.poll_workspace_transfers() {
+                needs_render = true;
+                needs_full_render = true;
+                needs_graphics_render = false;
             }
             if self.should_quit.load(Ordering::Acquire) {
                 continue;
@@ -1057,7 +1079,12 @@ impl HeadlessServer {
         terminal_id: &str,
     ) -> Option<&crate::terminal::TerminalRuntime> {
         let terminal_id = self.terminal_id_by_string(terminal_id)?;
-        self.app.terminal_runtimes.get(&terminal_id)
+        let runtime = self.app.terminal_runtimes.get(&terminal_id)?;
+        #[cfg(unix)]
+        if self.workspace_transfers.terminal_pending(&terminal_id) {
+            return None;
+        }
+        Some(runtime)
     }
 
     fn resolve_terminal_target_id_string(&self, target: &str) -> Option<String> {
@@ -1153,6 +1180,10 @@ impl HeadlessServer {
                 else {
                     return false;
                 };
+                #[cfg(unix)]
+                if self.workspace_transfers.pane_pending(runtime_pane_id) {
+                    return false;
+                }
                 let popup_blocks_input = self.app.state.popup_pane.is_some()
                     && self.popup_owner_tab_id == self.shell_tab_id_for_client(client_id);
                 if popup_blocks_input
@@ -2330,6 +2361,10 @@ impl HeadlessServer {
                 else {
                     return false;
                 };
+                #[cfg(unix)]
+                if self.workspace_transfers.pane_pending(runtime_pane_id) {
+                    return false;
+                }
                 let Some(runtime) = self.app.state.runtime_for_pane_in_workspace(
                     &self.app.terminal_runtimes,
                     workspace_index,
@@ -2844,6 +2879,12 @@ impl HeadlessServer {
             return false;
         }
 
+        #[cfg(unix)]
+        let msg = match self.workspace_transfers.intercept(&mut self.app, msg) {
+            Some(msg) => msg,
+            None => return true,
+        };
+
         let frozen_alt_screen_read = match self.alt_screen_read_conflict(&msg.request) {
             AltScreenReadConflict::None => None,
             AltScreenReadConflict::Frozen(snapshot) => Some(snapshot),
@@ -2916,7 +2957,16 @@ impl HeadlessServer {
         // pane.report_agent trigger handle_internal_event internally, which
         // bypasses drain_internal_events_with_forwarding. Headless mode disables
         // local sound playback, so sound notifications need to be forwarded here.
-        let toast_before = self.app.state.toast.clone();
+        let mut toast_before = self.app.state.toast.clone();
+        let tab_transfer = matches!(&msg.request.method, api::schema::Method::TabTransfer(_));
+        let transfer_owns_popup = match &msg.request.method {
+            api::schema::Method::TabTransfer(params) => self
+                .app
+                .parse_tab_id(&params.tab_id)
+                .and_then(|(workspace, tab)| self.app.public_tab_id(workspace, tab))
+                .is_some_and(|tab| self.popup_owner_tab_id.as_ref() == Some(&tab)),
+            _ => false,
+        };
         let pane_states_before: Vec<(
             usize,
             crate::layout::PaneId,
@@ -3044,12 +3094,34 @@ impl HeadlessServer {
                 }
             }
         }
+        // A transfer renumbers the tab without closing its owned popup. Repair
+        // ownership before either public or client-local location reconciliation.
+        if transfer_owns_popup {
+            if let Ok(api::schema::SuccessResponse {
+                result: api::schema::ResponseResult::TabInfo { tab },
+                ..
+            }) = serde_json::from_str(&response)
+            {
+                self.popup_owner_tab_id = Some(tab.tab_id);
+            }
+        }
         let _ = msg.respond_to.send(response);
 
         // Forward new toast state only when a client-local delivery mode is selected.
         // Herdr delivery renders the toast in-frame and must not ask clients to
         // show a terminal or system notification.
         let toast_after = self.app.state.toast.clone();
+        if tab_transfer {
+            if let (Some(before), Some(after)) = (&mut toast_before, &toast_after) {
+                if let (Some(old), Some(new)) = (&mut before.target, &after.target) {
+                    if old.pane_id == new.pane_id {
+                        // Updating an existing notification's navigation target
+                        // is not a new notification to deliver externally.
+                        old.workspace_id.clone_from(&new.workspace_id);
+                    }
+                }
+            }
+        }
         let forwarded_toast_from_state = if should_forward_toast_to_clients(
             self.app.state.toast_config.delivery,
         ) && toast_after.is_some()

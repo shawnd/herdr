@@ -75,6 +75,8 @@ pub enum Method {
     ClientShellSurfaceSet(ClientShellSurfaceSetParams),
     #[serde(rename = "session.snapshot")]
     SessionSnapshot(EmptyParams),
+    #[serde(rename = "session.list")]
+    SessionList(EmptyParams),
     #[serde(rename = "workspace.create")]
     WorkspaceCreate(WorkspaceCreateParams),
     #[serde(rename = "workspace.list")]
@@ -87,6 +89,14 @@ pub enum Method {
     WorkspaceRename(WorkspaceRenameParams),
     #[serde(rename = "workspace.move")]
     WorkspaceMove(WorkspaceMoveParams),
+    #[serde(rename = "workspace.transfer")]
+    WorkspaceTransfer(WorkspaceTransferParams),
+    #[serde(rename = "workspace.transfer.import")]
+    WorkspaceTransferImport(WorkspaceTransferImportParams),
+    #[serde(rename = "workspace.transfer.status")]
+    WorkspaceTransferStatus(WorkspaceTransferStatusParams),
+    #[serde(rename = "workspace.transfer.cancel")]
+    WorkspaceTransferCancel(WorkspaceTransferStatusParams),
     #[serde(rename = "workspace.move_block")]
     WorkspaceMoveBlock(WorkspaceMoveBlockParams),
     #[serde(rename = "workspace.report_metadata")]
@@ -113,6 +123,8 @@ pub enum Method {
     TabRename(TabRenameParams),
     #[serde(rename = "tab.move")]
     TabMove(TabMoveParams),
+    #[serde(rename = "tab.transfer")]
+    TabTransfer(TabTransferParams),
     #[serde(rename = "tab.close")]
     TabClose(TabTarget),
     #[serde(rename = "agent.list")]

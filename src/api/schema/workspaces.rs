@@ -39,6 +39,25 @@ pub struct WorkspaceMoveParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkspaceTransferParams {
+    pub workspace_id: String,
+    /// Another local session on the server's machine; started if stopped.
+    pub session: String,
+}
+
+/// Same-install invitation to receive a staged local workspace handoff.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkspaceTransferImportParams {
+    pub socket_path: std::path::PathBuf,
+    pub token: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkspaceTransferStatusParams {
+    pub token: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct WorkspaceMoveBlockParams {
     pub workspace_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

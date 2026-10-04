@@ -18,6 +18,7 @@ use crate::api::{ApiRequestSender, EventHub};
 use crate::ipc::LocalStream;
 
 const AGENT_PROMPT_EFFECT_TIMEOUT_MS: u64 = 5_000;
+const AGENT_STATUS_PROBE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
 pub(super) fn wait_for_output(
     request_id: String,
@@ -138,14 +139,15 @@ pub(super) fn wait_for_agent(
     running: &Arc<AtomicBool>,
 ) -> std::io::Result<Option<String>> {
     let last_event_sequence = event_hub.current_sequence();
-    let initial = match agent_get(&request_id, &params.target, api_tx) {
-        Ok(agent) => agent,
-        Err(response) => {
-            return serde_json::to_string(&response)
-                .map(Some)
-                .map_err(std::io::Error::other);
-        }
-    };
+    let (initial, use_local_events) =
+        match agent_get_with_origin(&request_id, &params.target, api_tx) {
+            Ok(agent) => agent,
+            Err(response) => {
+                return serde_json::to_string(&response)
+                    .map(Some)
+                    .map_err(std::io::Error::other);
+            }
+        };
     let until = agent_wait_statuses(params.until);
     if agent_wait_matches(&initial, &until, None) {
         return agent_wait_success(request_id, initial).map(Some);
@@ -162,6 +164,7 @@ pub(super) fn wait_for_agent(
             after_state_change_seq: None,
             accept_transient_status: true,
             timeout_kind: AgentWaitTimeoutKind::Status,
+            use_local_events,
         },
         stream,
         api_tx,
@@ -194,7 +197,7 @@ pub(super) fn prompt_agent(
     };
 
     let wait_started = std::time::Instant::now();
-    let before_prompt = match agent_get_for_prompt(
+    let (before_prompt, use_local_events) = match agent_get_for_prompt(
         &request_id,
         &params.target,
         api_tx,
@@ -274,6 +277,7 @@ pub(super) fn prompt_agent(
                 after_state_change_seq: Some(prompt_state_change_seq),
                 accept_transient_status: true,
                 timeout_kind,
+                use_local_events,
             },
             stream,
             api_tx,
@@ -305,6 +309,7 @@ pub(super) fn prompt_agent(
             after_state_change_seq: None,
             accept_transient_status: false,
             timeout_kind: AgentWaitTimeoutKind::Status,
+            use_local_events,
         },
         stream,
         api_tx,
@@ -348,6 +353,7 @@ struct ResolvedAgentWait {
     after_state_change_seq: Option<u64>,
     accept_transient_status: bool,
     timeout_kind: AgentWaitTimeoutKind,
+    use_local_events: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -382,15 +388,24 @@ fn wait_for_resolved_agent(
     let expected_agent = wait.initial.agent.clone();
     let pane_id = wait.initial.pane_id.clone();
     let mut last_event_sequence = wait.last_event_sequence;
+    // Inherited targets may resolve through a transfer router. Their status events
+    // live on the destination hub, so source events alone cannot drive this wait.
+    let mut next_status_probe = std::time::Instant::now() + AGENT_STATUS_PROBE_INTERVAL;
 
     loop {
         if should_stop_connection(stream, running)? {
             return Ok(None);
         }
 
-        let mut should_probe = false;
+        let mut should_probe =
+            !wait.use_local_events && std::time::Instant::now() >= next_status_probe;
         let mut matched_event_status = None;
-        for (sequence, event) in event_hub.events_after(last_event_sequence) {
+        let events = if wait.use_local_events {
+            event_hub.events_after(last_event_sequence)
+        } else {
+            Vec::new()
+        };
+        for (sequence, event) in events {
             last_event_sequence = sequence;
             match event.data {
                 EventData::PaneAgentDetected {
@@ -450,13 +465,41 @@ fn wait_for_resolved_agent(
                         .map(AgentWaitOutcome::Response)
                         .map(Some);
                 }
+                EventData::WorkspaceClosed { workspace_id, .. }
+                    if workspace_id == wait.initial.workspace_id =>
+                {
+                    return agent_wait_not_running(request_id)
+                        .map(AgentWaitOutcome::Response)
+                        .map(Some);
+                }
+                EventData::TabClosed {
+                    workspace_id,
+                    tab_id,
+                } if workspace_id == wait.initial.workspace_id && tab_id == wait.initial.tab_id => {
+                    return agent_wait_not_running(request_id)
+                        .map(AgentWaitOutcome::Response)
+                        .map(Some);
+                }
                 _ => {}
             }
         }
 
         if should_probe {
+            next_status_probe = std::time::Instant::now() + AGENT_STATUS_PROBE_INTERVAL;
             let current = match agent_get(&request_id, &wait.target, api_tx) {
                 Ok(agent) => agent,
+                Err(response)
+                    if response.error.code == "workspace_transfer_failed"
+                        && response
+                            .error
+                            .message
+                            .starts_with("workspace transfer pending")
+                        && deadline.is_none_or(|deadline| std::time::Instant::now() < deadline) =>
+                {
+                    // A reversible prepare window must not end an existing wait.
+                    std::thread::sleep(CONNECTION_POLL_INTERVAL);
+                    continue;
+                }
                 Err(response) => {
                     return agent_wait_probe_error(response)
                         .map(AgentWaitOutcome::Response)
@@ -563,6 +606,14 @@ fn agent_get(
     target: &str,
     api_tx: &ApiRequestSender,
 ) -> Result<crate::api::schema::AgentInfo, ErrorResponse> {
+    agent_get_with_origin(request_id, target, api_tx).map(|(agent, _)| agent)
+}
+
+fn agent_get_with_origin(
+    request_id: &str,
+    target: &str,
+    api_tx: &ApiRequestSender,
+) -> Result<(crate::api::schema::AgentInfo, bool), ErrorResponse> {
     let response = dispatch_to_app_with_timeout(
         Request {
             id: format!("{request_id}:agent"),
@@ -573,7 +624,7 @@ fn agent_get(
         api_tx,
         Some(APP_RESPONSE_TIMEOUT),
     );
-    agent_from_response(request_id, &response)
+    agent_probe_from_response(request_id, &response)
 }
 
 fn agent_get_for_prompt(
@@ -582,7 +633,7 @@ fn agent_get_for_prompt(
     api_tx: &ApiRequestSender,
     total_timeout_ms: Option<u64>,
     started: std::time::Instant,
-) -> Result<crate::api::schema::AgentInfo, ErrorResponse> {
+) -> Result<(crate::api::schema::AgentInfo, bool), ErrorResponse> {
     let request = Request {
         id: format!("{request_id}:agent"),
         method: Method::AgentGet(crate::api::schema::AgentTarget {
@@ -600,7 +651,17 @@ fn agent_get_for_prompt(
         }
         _ => dispatch_to_app_with_timeout(request, api_tx, Some(APP_RESPONSE_TIMEOUT)),
     };
-    agent_from_response(request_id, &response)
+    agent_probe_from_response(request_id, &response)
+}
+
+fn agent_probe_from_response(
+    request_id: &str,
+    response: &str,
+) -> Result<(crate::api::schema::AgentInfo, bool), ErrorResponse> {
+    let local = serde_json::from_str::<serde_json::Value>(response)
+        .map(|value| value["workspace_transfer_forwarded"] != true)
+        .unwrap_or(true);
+    agent_from_response(request_id, response).map(|agent| (agent, local))
 }
 
 fn agent_from_response(

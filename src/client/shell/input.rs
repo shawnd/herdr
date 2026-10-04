@@ -496,6 +496,11 @@ impl ClientShellState {
                         ..
                     }
                 ))
+                | Some(ClientShellOverlay::Transfer(ClientTransferOverlay {
+                    search_focused: true,
+                    submitting: false,
+                    ..
+                }))
                 | Some(ClientShellOverlay::Navigator(ClientNavigatorOverlay {
                     search_focused: true,
                     ..

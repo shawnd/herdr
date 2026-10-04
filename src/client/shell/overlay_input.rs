@@ -445,6 +445,9 @@ impl ClientShellState {
     }
 
     pub(super) fn insert_overlay_text(&mut self, text: &str) -> bool {
+        if self.insert_transfer_text(text) {
+            return true;
+        }
         if self.insert_worktree_overlay_text(text) {
             return true;
         }
@@ -626,6 +629,9 @@ impl ClientShellState {
         }
 
         if self.route_worktree_overlay_key(key, outcome) {
+            return;
+        }
+        if self.route_transfer_key(key, outcome) {
             return;
         }
         if matches!(self.overlay, Some(ClientShellOverlay::Navigator(_))) {

@@ -42,6 +42,13 @@ impl TerminalRuntime {
     }
 
     #[cfg(unix)]
+    pub(crate) fn resume_handoff_reader_after_commit(
+        &self,
+    ) -> std::io::Result<std::sync::mpsc::Receiver<std::io::Result<()>>> {
+        self.0.resume_handoff_reader_after_commit()
+    }
+
+    #[cfg(unix)]
     pub fn pause_handoff_reader(&self, timeout: std::time::Duration) -> std::io::Result<()> {
         self.0.pause_handoff_reader(timeout)
     }

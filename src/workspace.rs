@@ -588,6 +588,32 @@ impl Workspace {
         true
     }
 
+    /// Detach the entire tab, retaining its layout, pane state and runtime handles.
+    /// The caller must remove this workspace if it becomes empty.
+    pub(crate) fn take_tab_for_transfer(&mut self, idx: usize) -> Option<Tab> {
+        if idx >= self.tabs.len() {
+            return None;
+        }
+        let tab = self.tabs.remove(idx);
+        for pane_id in tab.panes.keys() {
+            self.unregister_pane(*pane_id);
+        }
+        self.adjust_active_tab_after_removal(idx);
+        Some(tab)
+    }
+
+    /// Append a detached tab with fresh public numbers in this workspace.
+    pub(crate) fn insert_transferred_tab(&mut self, mut tab: Tab) -> usize {
+        tab.number = self.next_public_tab_number;
+        self.next_public_tab_number += 1;
+        // Layout order is stable; HashMap iteration would assign nondeterministic IDs.
+        for pane_id in tab.layout.pane_ids() {
+            self.register_new_pane_with_number(pane_id, self.next_public_pane_number);
+        }
+        self.tabs.push(tab);
+        self.tabs.len() - 1
+    }
+
     pub fn move_tab(&mut self, source_idx: usize, insert_idx: usize) -> bool {
         if source_idx >= self.tabs.len() || insert_idx > self.tabs.len() {
             return false;
@@ -1427,6 +1453,40 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn whole_tab_transfer_preserves_active_survivor_and_consumes_fresh_numbers() {
+        let mut source = Workspace::test_adversarial_identity_state();
+        let mut destination = Workspace::test_adversarial_identity_state();
+        let active_root = source.tabs[source.active_tab].root_pane;
+        let moved_idx = source.tabs.len() - 1;
+        let moved_root = source.tabs[moved_idx].root_pane;
+        let tab_number = destination.next_public_tab_number;
+        let pane_number = destination.next_public_pane_number;
+        let source_next_pane = source.next_public_pane_number;
+        let source_next_tab = source.next_public_tab_number;
+        assert!(source.take_tab_for_transfer(usize::MAX).is_none());
+        source.assert_invariants_for_test();
+
+        let tab = source.take_tab_for_transfer(moved_idx).unwrap();
+        let pane_ids = tab.layout.pane_ids();
+        assert_eq!(source.tabs[source.active_tab].root_pane, active_root);
+        let inserted_idx = destination.insert_transferred_tab(tab);
+
+        assert_eq!(destination.tabs[inserted_idx].root_pane, moved_root);
+        assert_eq!(destination.tabs[inserted_idx].number, tab_number);
+        for (offset, pane_id) in pane_ids.iter().enumerate() {
+            assert_eq!(source.public_pane_number(*pane_id), None);
+            assert_eq!(
+                destination.public_pane_number(*pane_id),
+                Some(pane_number + offset)
+            );
+        }
+        assert_eq!(source.next_public_pane_number, source_next_pane);
+        assert_eq!(source.next_public_tab_number, source_next_tab);
+        source.assert_invariants_for_test();
+        destination.assert_invariants_for_test();
+    }
 
     #[test]
     fn generated_workspace_ids_are_short_base32_handles() {

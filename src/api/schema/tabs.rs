@@ -36,6 +36,15 @@ pub struct TabMoveParams {
     pub insert_index: usize,
 }
 
+/// Transfer a whole tab to another workspace without replacing its terminals.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TabTransferParams {
+    pub tab_id: String,
+    pub workspace_id: String,
+    #[serde(default)]
+    pub focus: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TabInfo {
     pub tab_id: String,
@@ -45,4 +54,24 @@ pub struct TabInfo {
     pub focused: bool,
     pub pane_count: usize,
     pub agent_status: AgentStatus,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tab_transfer_requires_targets_and_defaults_to_background() {
+        let params: TabTransferParams = serde_json::from_value(serde_json::json!({
+            "tab_id": "ws-a:t1", "workspace_id": "ws-b"
+        }))
+        .unwrap();
+        assert!(!params.focus);
+        assert!(
+            serde_json::from_value::<TabTransferParams>(serde_json::json!({
+                "tab_id": "ws-a:t1"
+            }))
+            .is_err()
+        );
+    }
 }

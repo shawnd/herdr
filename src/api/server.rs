@@ -1,6 +1,6 @@
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -38,6 +38,15 @@ pub struct ServerHandle {
     path: PathBuf,
     identity: SocketFileIdentity,
     running: Arc<AtomicBool>,
+    #[cfg(unix)]
+    workspace_transfer_stop_control: Arc<AtomicU8>,
+}
+
+#[derive(Clone)]
+struct ServerStopControl {
+    requested: Arc<AtomicBool>,
+    // 0: available, 1: transfer owns the server, 2: shutdown accepted.
+    workspace_transfer_phase: Arc<AtomicU8>,
 }
 
 impl Drop for ServerHandle {
@@ -53,6 +62,11 @@ impl Drop for ServerHandle {
 }
 
 impl ServerHandle {
+    #[cfg(unix)]
+    pub(crate) fn workspace_transfer_stop_control(&self) -> Arc<AtomicU8> {
+        self.workspace_transfer_stop_control.clone()
+    }
+
     pub(crate) fn remove_socket_file_if_owned(&self) -> std::io::Result<()> {
         remove_socket_file_if_owned(&self.path, &self.identity)
     }
@@ -117,6 +131,11 @@ fn start_server_inner(
     }
 
     let running = Arc::new(AtomicBool::new(true));
+    let workspace_transfer_stop_control = Arc::new(AtomicU8::new(0));
+    let server_stop = server_stop.map(|requested| ServerStopControl {
+        requested,
+        workspace_transfer_phase: workspace_transfer_stop_control.clone(),
+    });
     let listener_running = Arc::clone(&running);
     let thread = std::thread::spawn(move || {
         run_accept_loop(
@@ -155,6 +174,8 @@ fn start_server_inner(
         path,
         identity,
         running,
+        #[cfg(unix)]
+        workspace_transfer_stop_control,
     })
 }
 
@@ -299,7 +320,7 @@ fn handle_connection_with_stop(
     event_hub: &EventHub,
     running: &Arc<AtomicBool>,
     capabilities: Option<ServerCapabilities>,
-    server_stop: Option<&Arc<AtomicBool>>,
+    server_stop: Option<&ServerStopControl>,
     #[cfg(unix)] ssh_agents: Option<&crate::platform::ssh_agent::SshAgentRegistry>,
 ) -> std::io::Result<()> {
     if let Err(err) = stream.set_send_timeout(Some(STREAM_WRITE_TIMEOUT)) {
@@ -516,7 +537,7 @@ fn handle_request(
     request: Request,
     api_tx: &ApiRequestSender,
     capabilities: Option<ServerCapabilities>,
-    server_stop: Option<&Arc<AtomicBool>>,
+    server_stop: Option<&ServerStopControl>,
     response_write_complete: Option<std::sync::mpsc::Receiver<()>>,
 ) -> String {
     if matches!(&request.method, Method::Ping(_)) {
@@ -544,14 +565,27 @@ fn handle_request(
 
     if matches!(&request.method, Method::ServerStop(_)) {
         if let Some(server_stop) = server_stop {
-            server_stop.store(true, Ordering::Release);
+            if server_stop.workspace_transfer_phase.compare_exchange(
+                0,
+                2,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) == Err(1)
+            {
+                return error_response_json(
+                    request.id,
+                    "workspace_transfer_failed",
+                    "workspace transfer pending; retry after completion".into(),
+                );
+            }
+            server_stop.requested.store(true, Ordering::Release);
             return serde_json::to_string(&SuccessResponse {
                 id: request.id,
                 result: ResponseResult::Ok {},
             })
             .unwrap_or_else(|_| "{}".to_string());
         }
-    } else if server_stop.is_some_and(|stop| stop.load(Ordering::Acquire)) {
+    } else if server_stop.is_some_and(|stop| stop.requested.load(Ordering::Acquire)) {
         return error_response_json(
             request.id,
             "server_unavailable",
@@ -579,12 +613,17 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::ClientWindowTitleClear(_) => "client.window_title.clear",
         Method::ClientShellSurfaceSet(_) => "client_shell.surface.set",
         Method::SessionSnapshot(_) => "session.snapshot",
+        Method::SessionList(_) => "session.list",
         Method::WorkspaceCreate(_) => "workspace.create",
         Method::WorkspaceList(_) => "workspace.list",
         Method::WorkspaceGet(_) => "workspace.get",
         Method::WorkspaceFocus(_) => "workspace.focus",
         Method::WorkspaceRename(_) => "workspace.rename",
         Method::WorkspaceMove(_) => "workspace.move",
+        Method::WorkspaceTransfer(_) => "workspace.transfer",
+        Method::WorkspaceTransferImport(_) => "workspace.transfer.import",
+        Method::WorkspaceTransferStatus(_) => "workspace.transfer.status",
+        Method::WorkspaceTransferCancel(_) => "workspace.transfer.cancel",
         Method::WorkspaceMoveBlock(_) => "workspace.move_block",
         Method::WorkspaceReportMetadata(_) => "workspace.report_metadata",
         Method::WorkspaceClose(_) => "workspace.close",
@@ -598,6 +637,7 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::TabFocus(_) => "tab.focus",
         Method::TabRename(_) => "tab.rename",
         Method::TabMove(_) => "tab.move",
+        Method::TabTransfer(_) => "tab.transfer",
         Method::TabClose(_) => "tab.close",
         Method::AgentList(_) => "agent.list",
         Method::AgentGet(_) => "agent.get",
@@ -1456,7 +1496,10 @@ mod tests {
     #[test]
     fn server_stop_control_bypasses_app_channel() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let stop = Arc::new(AtomicBool::new(false));
+        let stop = ServerStopControl {
+            requested: Arc::new(AtomicBool::new(false)),
+            workspace_transfer_phase: Arc::new(AtomicU8::new(0)),
+        };
         let response = handle_request(
             Request {
                 id: "priority_stop".into(),
@@ -1471,7 +1514,7 @@ mod tests {
         let response: serde_json::Value = serde_json::from_str(&response).unwrap();
         assert_eq!(response["id"], "priority_stop");
         assert_eq!(response["result"]["type"], "ok");
-        assert!(stop.load(Ordering::Acquire));
+        assert!(stop.requested.load(Ordering::Acquire));
 
         let rejected = handle_request(
             Request {
@@ -1486,6 +1529,163 @@ mod tests {
         let rejected: serde_json::Value = serde_json::from_str(&rejected).unwrap();
         assert_eq!(rejected["error"]["code"], "server_unavailable");
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn socket_stop_is_rejected_during_transfer_and_responsive_after_release() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let stop = ServerStopControl {
+            requested: Arc::new(AtomicBool::new(false)),
+            workspace_transfer_phase: Arc::new(AtomicU8::new(1)),
+        };
+        for pending in [true, false] {
+            let (mut client, server, path) = local_stream_pair("transfer-stop");
+            let worker_tx = tx.clone();
+            let worker_stop = stop.clone();
+            let worker = std::thread::spawn(move || {
+                handle_connection_with_stop(
+                    server,
+                    &worker_tx,
+                    &EventHub::default(),
+                    &Arc::new(AtomicBool::new(true)),
+                    None,
+                    Some(&worker_stop),
+                    None,
+                )
+                .unwrap();
+            });
+            client
+                .set_recv_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            client
+                .write_all(b"{\"id\":\"stop\",\"method\":\"server.stop\",\"params\":{}}\n")
+                .unwrap();
+            let response: serde_json::Value =
+                serde_json::from_str(&read_line(&mut client)).unwrap();
+            if pending {
+                assert_eq!(response["error"]["code"], "workspace_transfer_failed");
+                assert!(!stop.requested.load(Ordering::Acquire));
+                assert_eq!(stop.workspace_transfer_phase.load(Ordering::Acquire), 1);
+                stop.workspace_transfer_phase.store(0, Ordering::Release);
+            } else {
+                assert_eq!(response["result"]["type"], "ok");
+                assert!(stop.requested.load(Ordering::Acquire));
+                assert_eq!(stop.workspace_transfer_phase.load(Ordering::Acquire), 2);
+            }
+            worker.join().unwrap();
+            fs::remove_file(path).unwrap();
+        }
+        assert!(
+            rx.try_recv().is_err(),
+            "stop must remain independent of the app loop"
+        );
+    }
+
+    fn reply_with_wait_agent(message: ApiRequestMessage, status: &str, forwarded: bool) {
+        assert!(matches!(message.request.method, Method::AgentGet(_)));
+        message
+            .respond_to
+            .send(
+                serde_json::json!({
+                "id":message.request.id,
+                "workspace_transfer_forwarded":forwarded,
+                        "result":{"type":"agent_info","agent":{
+                            "terminal_id":"term-1","agent":"pi","agent_status":status,
+                            "workspace_id":"w2","tab_id":"w2:t1","pane_id":"w2:p1",
+                            "focused":true,"revision":0
+                        }}
+                    })
+                .to_string(),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn agent_wait_probes_without_source_events_for_bounded_and_unbounded_waits() {
+        for timeout in [serde_json::Value::Null, serde_json::json!(30_000)] {
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let (mut client, server, path) = local_stream_pair("routed-agent-wait");
+            let worker = std::thread::spawn(move || {
+                handle_connection(
+                    server,
+                    &tx,
+                    &EventHub::default(),
+                    &Arc::new(AtomicBool::new(true)),
+                    None,
+                )
+                .unwrap();
+            });
+            client
+                .set_recv_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            writeln!(client, "{}", serde_json::json!({"id":"wait","method":"agent.wait","params":{"target":"w1:p1","until":["idle"],"timeout_ms":timeout}})).unwrap();
+            reply_with_wait_agent(rx.blocking_recv().unwrap(), "working", true);
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let probe = loop {
+                if let Ok(message) = rx.try_recv() {
+                    break message;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "wait never probed the forwarded target"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            };
+            reply_with_wait_agent(probe, "idle", true);
+            let response: serde_json::Value =
+                serde_json::from_str(&read_line(&mut client)).unwrap();
+            assert_eq!(response["id"], "wait");
+            assert_eq!(response["result"]["agent"]["agent_status"], "idle");
+            worker.join().unwrap();
+            fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn agent_wait_ends_when_transfer_closes_its_source_workspace_or_tab() {
+        use crate::api::schema::{EventData, EventEnvelope, EventKind};
+        for event in [
+            EventEnvelope {
+                event: EventKind::TabClosed,
+                data: EventData::TabClosed {
+                    workspace_id: "w2".into(),
+                    tab_id: "w2:t1".into(),
+                },
+            },
+            EventEnvelope {
+                event: EventKind::WorkspaceClosed,
+                data: EventData::WorkspaceClosed {
+                    workspace_id: "w2".into(),
+                    workspace: None,
+                },
+            },
+        ] {
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let (mut client, server, path) = local_stream_pair("transfer-agent-wait");
+            let hub = EventHub::default();
+            let worker_hub = hub.clone();
+            let worker = std::thread::spawn(move || {
+                handle_connection(
+                    server,
+                    &tx,
+                    &worker_hub,
+                    &Arc::new(AtomicBool::new(true)),
+                    None,
+                )
+                .unwrap();
+            });
+            client
+                .set_recv_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            client.write_all(b"{\"id\":\"wait\",\"method\":\"agent.wait\",\"params\":{\"target\":\"w2:p1\",\"until\":[\"idle\"]}}\n").unwrap();
+            reply_with_wait_agent(rx.blocking_recv().unwrap(), "working", false);
+            hub.push(event);
+            let response: serde_json::Value =
+                serde_json::from_str(&read_line(&mut client)).unwrap();
+            assert_eq!(response["error"]["code"], "agent_not_running");
+            worker.join().unwrap();
+            fs::remove_file(path).unwrap();
+        }
     }
 
     #[test]

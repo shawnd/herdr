@@ -259,6 +259,91 @@ impl AppState {
 // ---------------------------------------------------------------------------
 
 impl AppState {
+    /// Transfer ownership without detaching terminals or allocating new panes.
+    /// All fallible validation happens before removing the source tab.
+    pub(crate) fn transfer_tab(
+        &mut self,
+        source_ws_idx: usize,
+        source_tab_idx: usize,
+        destination_ws_idx: usize,
+        focus: bool,
+    ) -> Option<(usize, usize, bool)> {
+        let source = self.workspaces.get(source_ws_idx)?;
+        let tab = source.tabs.get(source_tab_idx)?;
+        let destination = self.workspaces.get(destination_ws_idx)?;
+        if source_ws_idx == destination_ws_idx {
+            return Some((source_ws_idx, source_tab_idx, false));
+        }
+        destination.next_public_tab_number.checked_add(1)?;
+        destination
+            .next_public_pane_number
+            .checked_add(tab.panes.len())?;
+        let pane_ids = tab.layout.pane_ids();
+        let aliases = pane_ids
+            .iter()
+            .map(|&pane_id| {
+                Some((
+                    crate::workspace::public_pane_id_for_number(
+                        &source.id,
+                        source.public_pane_number(pane_id)?,
+                    ),
+                    pane_id,
+                ))
+            })
+            .collect::<Option<Vec<_>>>()?;
+        let destination_id = destination.id.clone();
+        let mut previous_focus = self.current_pane_focus_target();
+        let tab = self.workspaces[source_ws_idx].take_tab_for_transfer(source_tab_idx)?;
+        let target_tab_idx = self.workspaces[destination_ws_idx].insert_transferred_tab(tab);
+        let source_empty = self.workspaces[source_ws_idx].tabs.is_empty();
+        let mut target_ws_idx = destination_ws_idx;
+        if source_empty {
+            // Transfer is not a close operation: never close a worktree group or checkout.
+            self.workspaces.remove(source_ws_idx);
+            target_ws_idx -= usize::from(destination_ws_idx > source_ws_idx);
+            let repair_index = |idx: usize| {
+                if idx == source_ws_idx {
+                    source_ws_idx.min(self.workspaces.len() - 1)
+                } else {
+                    idx - usize::from(idx > source_ws_idx)
+                }
+            };
+            self.active = self.active.map(repair_index);
+            self.selected = repair_index(self.selected);
+        }
+        self.public_pane_id_aliases.extend(aliases);
+        // Existing raw handoff aliases and terminal/runtime maps remain attached to
+        // the same pane identities. Only workspace-qualified references change.
+        for target in [&mut self.previous_pane_focus, &mut previous_focus]
+            .into_iter()
+            .flatten()
+        {
+            if pane_ids.contains(&target.pane_id) {
+                target.workspace_id = destination_id.clone();
+            }
+        }
+        if let Some(target) = self.toast.as_mut().and_then(|toast| toast.target.as_mut()) {
+            if pane_ids.contains(&target.pane_id) {
+                target.workspace_id = destination_id.clone();
+            }
+        }
+        for pane_id in pane_ids {
+            if let Some(notification) = self.pending_agent_notifications.get_mut(&pane_id) {
+                notification.workspace_id = destination_id.clone();
+            }
+        }
+        if focus || self.active.is_none() {
+            self.switch_workspace_tab(target_ws_idx, target_tab_idx);
+            let focused_pane = self.workspaces[target_ws_idx].tabs[target_tab_idx]
+                .layout
+                .focused();
+            self.record_pane_focus_change(previous_focus, target_ws_idx, focused_pane);
+            self.mode = Mode::Terminal;
+        }
+        self.mark_session_dirty();
+        Some((target_ws_idx, target_tab_idx, source_empty))
+    }
+
     pub(crate) fn next_agent_metadata_expiry(&self) -> Option<std::time::Instant> {
         self.terminals
             .values()
