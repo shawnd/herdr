@@ -21,11 +21,25 @@ pub(crate) fn render_tab_bar(
         .iter()
         .filter(|tab| Some(tab.workspace_id.as_str()) == snapshot.focused_workspace_id.as_deref())
         .collect::<Vec<_>>();
+    let agent_tabs = snapshot
+        .agents
+        .iter()
+        .filter(|agent| {
+            Some(agent.workspace_id.as_str()) == snapshot.focused_workspace_id.as_deref()
+        })
+        .map(|agent| agent.tab_id.as_str())
+        .collect::<std::collections::HashSet<_>>();
     let desired_widths = tabs
         .iter()
         .map(|tab| {
             let label = tab_label(tab);
-            display_width(&label).saturating_add(4).max(MIN_TAB_WIDTH)
+            display_width(&label)
+                .saturating_add(if agent_tabs.contains(tab.tab_id.as_str()) {
+                    6
+                } else {
+                    4
+                })
+                .max(MIN_TAB_WIDTH)
         })
         .collect::<Vec<_>>();
     let content = tab_bar_content_area(snapshot, area);
@@ -93,6 +107,9 @@ pub(crate) fn render_tab_bar(
     let mut last_visible = None;
     for (index, tab) in tabs.iter().enumerate().skip(*tab_scroll) {
         let name = tab_label(tab);
+        let indicator = agent_tabs
+            .contains(tab.tab_id.as_str())
+            .then(|| status_icon(tab.agent_status, config.status_indicators));
         let desired = desired_widths[index];
         let remaining = tab_right.saturating_sub(x);
         let width = desired.min(remaining);
@@ -114,15 +131,32 @@ pub(crate) fn render_tab_bar(
         } else {
             Style::default().fg(palette.overlay0).bg(palette.surface0)
         };
-        let padding = width.saturating_sub(display_width(&name));
+        let label_width =
+            display_width(&name).saturating_add(if indicator.is_some() { 2 } else { 0 });
+        let padding = width.saturating_sub(label_width);
         let left = padding / 2;
         let text = format!(
-            "{empty:left$}{name}{empty:right_padding$}",
+            "{empty:left$}{icon}{gap}{name}{empty:right_padding$}",
             empty = "",
+            icon = indicator.unwrap_or(""),
+            gap = if indicator.is_some() { " " } else { "" },
             left = left as usize,
             right_padding = padding.saturating_sub(left) as usize,
         );
         put_text(buffer, rect.x, rect.y, rect.width, &text, style);
+        if let Some(icon) = indicator {
+            let icon_x = rect.x.saturating_add(left);
+            if icon_x < rect.right() {
+                put_text(
+                    buffer,
+                    icon_x,
+                    rect.y,
+                    1,
+                    icon,
+                    style.fg(status_color(tab.agent_status, palette)),
+                );
+            }
+        }
         hits.tabs.push((rect, tab.tab_id.clone()));
         first_visible.get_or_insert(index);
         last_visible = Some(index);

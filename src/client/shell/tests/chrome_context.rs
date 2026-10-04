@@ -1,6 +1,92 @@
 use super::*;
 
 #[test]
+fn tabs_show_sidebar_status_indicators_only_for_tabs_with_agents() {
+    let mut projected = snapshot();
+    projected.tabs.push(ClientShellTab {
+        tab_id: "tab_2".into(),
+        workspace_id: "ws_1".into(),
+        number: 2,
+        label: "work".into(),
+        custom_label: true,
+        zoomed: false,
+        focused: false,
+        agent_status: AgentStatus::Idle,
+    });
+    let mut agent_pane = projected.panes[0].clone();
+    agent_pane.pane_id = "pane_2".into();
+    agent_pane.tab_id = "tab_2".into();
+    agent_pane.focused = false;
+    projected.panes.push(agent_pane);
+    projected.agents.push(ClientShellAgent {
+        pane_id: "pane_2".into(),
+        workspace_id: "ws_1".into(),
+        tab_id: "tab_2".into(),
+        name: None,
+        display_agent: None,
+        agent: Some("opencode".into()),
+        title: None,
+        terminal_title: None,
+        terminal_title_stripped: None,
+        agent_status: AgentStatus::Idle,
+        state_change_seq: 1,
+        state_labels: Vec::new(),
+        tokens: Vec::new(),
+        focused: false,
+    });
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    for (status, indicator) in [
+        (AgentStatus::Idle, "○"),
+        (AgentStatus::Working, "●"),
+        (AgentStatus::Blocked, "●"),
+    ] {
+        projected.revision += 1;
+        projected.tabs[1].agent_status = status;
+        projected.agents[0].agent_status = status;
+        state.set_snapshot(Box::new(projected.clone()));
+        let mut pane_surface = surface();
+        pane_surface.projection_revision = projected.revision;
+        state.set_pane_surface(pane_surface);
+        let frame = state.compose(106, 20).expect("tab status frame");
+        let empty = state.hits.tabs[0].0;
+        let populated = state.hits.tabs[1].0;
+        let cells = &frame.cells[..frame.width as usize];
+        assert!(cells[empty.x as usize..empty.right() as usize]
+            .iter()
+            .all(|cell| cell.symbol != "○" && cell.symbol != "●"));
+        let dot = cells[populated.x as usize..populated.right() as usize]
+            .iter()
+            .find(|cell| cell.symbol == indicator)
+            .unwrap_or_else(|| {
+                panic!(
+                    "missing agent tab indicator {indicator:?} for {status:?}: {:?}",
+                    cells[populated.x as usize..populated.right() as usize]
+                        .iter()
+                        .map(|cell| cell.symbol.as_str())
+                        .collect::<String>()
+                )
+            });
+        assert_eq!(
+            dot.fg,
+            crate::protocol::color_to_u32(status_color(status, &state.config.palette))
+        );
+    }
+
+    state.config.status_indicators = crate::config::StatusIndicatorStyle::Symbols;
+    projected.revision += 1;
+    projected.tabs[1].agent_status = AgentStatus::Blocked;
+    let mut pane_surface = surface();
+    pane_surface.projection_revision = projected.revision;
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(pane_surface);
+    let frame = state.compose(106, 20).expect("symbol tab status frame");
+    let rect = state.hits.tabs[1].0;
+    assert!(frame.cells[rect.x as usize..rect.right() as usize]
+        .iter()
+        .any(|cell| cell.symbol == "×"));
+}
+
+#[test]
 fn tab_overflow_controls_scroll_the_client_owned_tab_bar() {
     let mut snapshot = snapshot();
     snapshot.tabs.extend((2..=8).map(|number| ClientShellTab {

@@ -448,6 +448,7 @@ impl Default for AgentsSidebarConfig {
                     AgentSidebarToken::Tab,
                 ],
                 vec![AgentSidebarToken::Agent],
+                vec![AgentSidebarToken::Custom("session_title".to_string())],
             ],
             rows_by_agent: BTreeMap::new(),
             row_gap: DEFAULT_SIDEBAR_ROW_GAP,
@@ -499,6 +500,7 @@ mod tests {
                     AgentSidebarToken::Tab,
                 ],
                 vec![AgentSidebarToken::Agent],
+                vec![AgentSidebarToken::Custom("session_title".into())],
             ]
         );
         assert!(config.agents.rows_by_agent.is_empty());
